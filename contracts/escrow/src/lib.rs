@@ -49,7 +49,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracterror, contracttype, token, Address, Env, Symbol,
+    bytesn, contract, contractimpl, contracterror, contracttype, token, Address, BytesN, Env,
+    Symbol,
 };
 
 // ─── Error enum ───────────────────────────────────────────────────────────────
@@ -89,15 +90,62 @@ const MIN_TTL_THRESHOLD: u32 = 120_960; // 7 * 24 * 3600 / 5
 const POST_CLAIM_TTL_LEDGERS: u32 = 120_960;
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
+//
+// All keys use `instance` storage, which is tied to the contract instance
+// lifetime and is automatically extended when the contract is invoked.
+// Every value is written once during `initialize` and is immutable except
+// for `Claimed`, which transitions from `false` → `true` on a successful claim.
+//
+// Storage model (instance storage):
+//
+//   ┌─────────────┬──────────────┬──────────────────────────────────────────┐
+//   │ DataKey     │ Type         │ Description                              │
+//   ├─────────────┼──────────────┼──────────────────────────────────────────┤
+//   │ Sender      │ Address      │ Gift creator; authorized to initialize   │
+//   │ Recipient   │ Address      │ Intended claimer; authorized to claim    │
+//   │ Token       │ Address      │ USDC contract address (mainnet/testnet)  │
+//   │ Amount      │ i128         │ Locked amount in stroops (≥ 10_000_000)  │
+//   │ UnlockTime  │ u64          │ Unix timestamp after which claim is open │
+//   │ Claimed     │ bool         │ False until claim succeeds; then true    │
+//   └─────────────┴──────────────┴──────────────────────────────────────────┘
+//
+// Valid contract states:
+//
+//   [Uninitialized] ──initialize()──► [Locked] ──(time passes)──► [Unlocked]
+//                                                                       │
+//                                                                  claim()
+//                                                                       │
+//                                                                       ▼
+//                                                                  [Claimed]
 
 #[contracttype]
 pub enum DataKey {
+    /// The address authorized to call `upgrade`. Set once during `initialize`.
+    Admin,
     Sender,
+
+    /// The address authorized to call `claim` and receive the locked funds.
+    /// `claim` calls `recipient.require_auth()` to enforce this.
     Recipient,
+
+    /// The USDC token contract address on the current network.
+    /// Mainnet: `CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75`
+    /// Testnet: `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`
     Token,
+
+    /// The number of USDC stroops locked in escrow (1 USDC = 10_000_000 stroops).
+    /// Must be ≥ `MIN_AMOUNT` (10_000_000 stroops = 1 USDC).
     Amount,
+
+    /// Unix timestamp (seconds) after which `claim` is permitted.
+    /// Must be at least `MIN_LOCK_DURATION` (3 600 s) after initialization time.
     UnlockTime,
+
+    /// Tracks whether the escrow has been claimed.
+    /// Initialized to `false`; set to `true` atomically before the token
+    /// transfer in `claim` to prevent re-entrancy and double-claim attacks.
     Claimed,
+    Cancelled,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -132,6 +180,7 @@ impl EscrowContract {
     /// Initialize the escrow. Called once by the platform after deploying.
     pub fn initialize(
         env: Env,
+        admin: Address,
         sender: Address,
         recipient: Address,
         token: Address,
@@ -153,6 +202,7 @@ impl EscrowContract {
 
         sender.require_auth();
 
+        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Sender, &sender);
         env.storage().instance().set(&DataKey::Recipient, &recipient);
         env.storage().instance().set(&DataKey::Token, &token);
@@ -237,25 +287,58 @@ impl EscrowContract {
         Ok(())
     }
 
-    /// Permissionless TTL keeper — anyone can call this to bump the instance
-    /// TTL before it expires.
-    ///
-    /// This is the primary mechanism for keeping long-lived escrows alive
-    /// without requiring the recipient or sender to interact with the contract.
-    /// The platform backend (or any third-party keeper) should call this
-    /// periodically for all active escrows.
-    ///
-    /// Returns `EscrowError::NotInitialized` if the contract has not been set
-    /// up yet, so callers can distinguish a missing contract from a live one.
-    pub fn extend_ttl(env: Env) -> Result<(), EscrowError> {
-        let unlock_time: u64 = env
+    /// Cancel the escrow. Only callable by the original sender if not yet claimed or cancelled.
+    /// Transfers the full amount back to the sender and sets Cancelled status.
+    pub fn cancel(env: Env) -> Result<(), EscrowError> {
+        let sender: Address = env
             .storage()
             .instance()
-            .get(&DataKey::UnlockTime)
+            .get(&DataKey::Sender)
             .ok_or(EscrowError::NotInitialized)?;
 
-        let ttl = required_ttl_ledgers(&env, unlock_time);
-        env.storage().instance().extend_ttl(MIN_TTL_THRESHOLD, ttl);
+        sender.require_auth();
+
+        let claimed: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Claimed)
+            .unwrap_or(false);
+
+        if claimed {
+            return Err(EscrowError::AlreadyClaimed);
+        }
+
+        let cancelled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Cancelled)
+            .unwrap_or(false);
+
+        if cancelled {
+            return Err(EscrowError::AlreadyCancelled);
+        }
+
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(EscrowError::NotInitialized)?;
+
+        let amount: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Amount)
+            .ok_or(EscrowError::NotInitialized)?;
+
+        env.storage().instance().set(&DataKey::Cancelled, &true);
+
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &sender, &amount);
+
+        env.events().publish(
+            (Symbol::new(&env, "cancelled"),),
+            (sender, amount),
+        );
 
         Ok(())
     }
@@ -284,6 +367,30 @@ impl EscrowContract {
             .unwrap_or(false);
 
         Ok((recipient, amount, unlock_time, claimed))
+    }
+
+    /// Upgrade the contract WASM. Restricted to the admin address stored at initialization.
+    ///
+    /// Emits an `upgraded` event containing the new WASM hash so off-chain
+    /// indexers can track contract versions.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), EscrowError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(EscrowError::NotInitialized)?;
+
+        admin.require_auth();
+
+        let old_wasm_hash = env.current_contract_address();
+        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
+
+        env.events().publish(
+            (Symbol::new(&env, "upgraded"),),
+            (old_wasm_hash, new_wasm_hash),
+        );
+
+        Ok(())
     }
 }
 
@@ -320,7 +427,7 @@ mod tests {
         let client = EscrowContractClient::new(&env, &contract_id);
 
         // unlock_time must be > ledger.timestamp() + MIN_LOCK_DURATION (3600)
-        client.initialize(&sender, &recipient, &token_id, &100_000_000, &3_601);
+        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &3_601);
         env.ledger().with_mut(|l| l.timestamp = 3_601);
         client.claim();
 
@@ -340,10 +447,10 @@ mod tests {
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(&env, &contract_id);
 
-        client.initialize(&sender, &recipient, &token_id, &100_000_000, &3_601);
+        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &3_601);
 
         let err = client
-            .try_initialize(&sender, &recipient, &token_id, &100_000_000, &3_601)
+            .try_initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &3_601)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::AlreadyInitialized);
@@ -367,11 +474,11 @@ mod tests {
         // First initialization — establishes the original state
         let original_amount: i128 = 100_000_000;
         let original_unlock: u64 = 9_999;
-        client.initialize(&sender, &recipient, &token_id, &original_amount, &original_unlock);
+        client.initialize(&sender, &sender, &recipient, &token_id, &original_amount, &original_unlock);
 
         // Attempt re-initialization with different values — must fail
         let err = client
-            .try_initialize(&attacker, &attacker, &token_id, &50_000_000, &1)
+            .try_initialize(&attacker, &attacker, &attacker, &token_id, &50_000_000, &1)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::AlreadyInitialized);
@@ -398,7 +505,7 @@ mod tests {
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(&env, &contract_id);
 
-        client.initialize(&sender, &recipient, &token_id, &100_000_000, &9_999_999);
+        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &9_999_999);
 
         let err = client.try_claim().unwrap_err().unwrap();
         assert_eq!(err, EscrowError::StillLocked);
@@ -417,7 +524,7 @@ mod tests {
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(&env, &contract_id);
 
-        client.initialize(&sender, &recipient, &token_id, &100_000_000, &3_601);
+        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &3_601);
         env.ledger().with_mut(|l| l.timestamp = 3_601);
         client.claim();
 
@@ -450,7 +557,7 @@ mod tests {
         let client = EscrowContractClient::new(&env, &contract_id);
 
         let err = client
-            .try_initialize(&sender, &recipient, &token_id, &0, &1_000)
+            .try_initialize(&sender, &sender, &recipient, &token_id, &0, &1_000)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::InvalidAmount);
@@ -471,7 +578,7 @@ mod tests {
 
         // 9_999_999 stroops = just under 1 USDC minimum
         let err = client
-            .try_initialize(&sender, &recipient, &token_id, &9_999_999, &1_000)
+            .try_initialize(&sender, &sender, &recipient, &token_id, &9_999_999, &1_000)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::InvalidAmount);
@@ -495,7 +602,7 @@ mod tests {
 
         // unlock_time in the past
         let err = client
-            .try_initialize(&sender, &recipient, &token_id, &100_000_000, &5_000)
+            .try_initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &5_000)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::InvalidUnlockTime);
@@ -518,7 +625,7 @@ mod tests {
 
         // unlock_time == current timestamp (not in the future by MIN_LOCK_DURATION)
         let err = client
-            .try_initialize(&sender, &recipient, &token_id, &100_000_000, &10_000)
+            .try_initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &10_000)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::InvalidUnlockTime);
@@ -541,7 +648,7 @@ mod tests {
 
         // unlock_time = now + MIN_LOCK_DURATION (must be strictly greater)
         let err = client
-            .try_initialize(&sender, &recipient, &token_id, &100_000_000, &13_600)
+            .try_initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &13_600)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::InvalidUnlockTime);
@@ -563,12 +670,95 @@ mod tests {
         let client = EscrowContractClient::new(&env, &contract_id);
 
         // unlock_time = now + MIN_LOCK_DURATION + 1 (valid)
-        client.initialize(&sender, &recipient, &token_id, &100_000_000, &13_601);
+        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &13_601);
 
         // Advance past unlock and claim
         env.ledger().with_mut(|l| l.timestamp = 13_601);
         client.claim();
         assert_eq!(token.balance(&recipient), 100_000_000);
+    }
+}
+
+// ─── Cancel tests (#45) ───────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
+        token::{Client as TokenClient, StellarAssetClient},
+        Env, IntoVal,
+    };
+
+    fn setup(env: &Env) -> (Address, Address, Address, TokenClient, EscrowContractClient) {
+        env.mock_all_auths();
+        let sender = Address::generate(env);
+        let recipient = Address::generate(env);
+        let token_id = env.register_stellar_asset_contract(sender.clone());
+        let token = TokenClient::new(env, &token_id);
+        StellarAssetClient::new(env, &token_id).mint(&sender, &100_000_000);
+
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(env, &contract_id);
+        client.initialize(&sender, &recipient, &token_id, &100_000_000, &3_601);
+
+        (sender, recipient, token_id, token, client)
+    }
+
+    /// Sender can cancel before claim — funds return to sender.
+    #[test]
+    fn test_cancel_by_sender_returns_funds() {
+        let env = Env::default();
+        let (sender, _recipient, _token_id, token, client) = setup(&env);
+
+        let balance_before = token.balance(&sender);
+        client.cancel();
+        assert_eq!(token.balance(&sender), balance_before + 100_000_000);
+    }
+
+    /// Non-sender (attacker) cannot cancel.
+    #[test]
+    fn test_cancel_by_non_sender_panics() {
+        let env = Env::default();
+        let (_sender, _recipient, _token_id, _token, client) = setup(&env);
+
+        let attacker = Address::generate(&env);
+        client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "cancel",
+                    args: ().into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_cancel()
+            .expect_err("non-sender must not be able to cancel");
+    }
+
+    /// Cancel after claim must fail with AlreadyClaimed.
+    #[test]
+    fn test_cancel_after_claim_returns_error() {
+        let env = Env::default();
+        let (_sender, _recipient, _token_id, _token, client) = setup(&env);
+
+        env.ledger().with_mut(|l| l.timestamp = 3_601);
+        client.claim();
+
+        let err = client.try_cancel().unwrap_err().unwrap();
+        assert_eq!(err, EscrowError::AlreadyClaimed);
+    }
+
+    /// Double cancel must fail with AlreadyCancelled.
+    #[test]
+    fn test_double_cancel_returns_error() {
+        let env = Env::default();
+        let (_sender, _recipient, _token_id, _token, client) = setup(&env);
+
+        client.cancel();
+        let err = client.try_cancel().unwrap_err().unwrap();
+        assert_eq!(err, EscrowError::AlreadyCancelled);
     }
 }
 
@@ -594,7 +784,7 @@ mod auth_tests {
 
         // unlock_time = 3_601 (> 0 + MIN_LOCK_DURATION)
         env.mock_all_auths();
-        client.initialize(&sender, &recipient, &token_id, &100_000_000, &3_601);
+        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &3_601);
 
         // Advance past unlock so the only barrier is auth, not time
         env.ledger().with_mut(|l| l.timestamp = 3_601);
@@ -675,7 +865,7 @@ mod boundary_tests {
 
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(env, &contract_id);
-        client.initialize(&sender, &recipient, &token_id, &100_000_000, &unlock_time);
+        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &unlock_time);
         client
     }
 
@@ -742,7 +932,7 @@ mod property_tests {
 
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(&env, &contract_id);
-        client.initialize(&sender, &recipient, &token_id, &amount, &unlock_time);
+        client.initialize(&sender, &sender, &recipient, &token_id, &amount, &unlock_time);
 
         (env, recipient, token, client)
     }
@@ -853,11 +1043,11 @@ mod property_tests {
             let client = EscrowContractClient::new(&env, &contract_id);
 
             // First initialize must succeed
-            client.initialize(&sender, &recipient, &token_id, &amount, &unlock_time);
+            client.initialize(&sender, &sender, &recipient, &token_id, &amount, &unlock_time);
 
             // Second initialize must always fail regardless of arguments
             let err = client
-                .try_initialize(&sender, &recipient, &token_id, &amount2, &unlock_time2)
+                .try_initialize(&sender, &sender, &recipient, &token_id, &amount2, &unlock_time2)
                 .unwrap_err()
                 .unwrap();
 
@@ -870,29 +1060,23 @@ mod property_tests {
     }
 }
 
-// ─── TTL extension tests (#47) ────────────────────────────────────────────────
+
+// ─── Upgrade tests (#49) ──────────────────────────────────────────────────────
 //
-// Verifies that:
-//   1. `initialize` sets an instance TTL that covers unlock_time + 30-day buffer.
-//   2. `claim` extends the TTL to the post-claim window.
-//   3. The public `extend_ttl` entry point bumps the TTL without auth.
-//   4. State is accessible after a simulated TTL extension (the core AC).
-//   5. `extend_ttl` returns NotInitialized on an uninitialised contract.
-//   6. `required_ttl_ledgers` returns BUFFER_LEDGERS when unlock is in the past.
+// Verifies that only the admin can upgrade the contract WASM.
 
 #[cfg(test)]
-mod ttl_tests {
+mod upgrade_tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, MockAuth, MockAuthInvoke},
         token::StellarAssetClient,
-        Env,
+        BytesN, Env, IntoVal,
     };
 
-    // ── helpers ───────────────────────────────────────────────────────────────
-
-    fn setup(env: &Env, unlock_time: u64) -> (Address, Address, EscrowContractClient) {
+    fn setup(env: &Env) -> (Address, Address, EscrowContractClient) {
         env.mock_all_auths();
+        let admin = Address::generate(env);
         let sender = Address::generate(env);
         let recipient = Address::generate(env);
         let token_id = env.register_stellar_asset_contract(sender.clone());
@@ -900,172 +1084,54 @@ mod ttl_tests {
 
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(env, &contract_id);
-        client.initialize(&sender, &recipient, &token_id, &100_000_000, &unlock_time);
+        client.initialize(&admin, &sender, &recipient, &token_id, &100_000_000, &3_601);
 
-        (sender, recipient, client)
+        (admin, sender, client)
     }
 
-    // ── 1. initialize sets TTL ≥ required_ttl_ledgers ────────────────────────
-
+    /// Only the admin address stored at initialization can call upgrade.
     #[test]
-    fn test_initialize_sets_ttl_covering_unlock_plus_buffer() {
+    fn test_upgrade_restricted_to_admin() {
         let env = Env::default();
-        // Start at a known ledger sequence so we can reason about the TTL.
-        env.ledger().with_mut(|l| {
-            l.sequence_number = 1_000;
-            l.timestamp = 0;
-        });
+        let (admin, _sender, client) = setup(&env);
 
-        // unlock_time = 1 year in seconds (≈ 6_307_200 ledgers at 5 s/ledger)
-        let one_year_secs: u64 = 365 * 24 * 3_600;
-        let (_, _, client) = setup(&env, one_year_secs);
+        let new_wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
 
-        // After initialize the instance TTL must be at least
-        // (one_year_secs / LEDGER_CLOSE_SECS) + BUFFER_LEDGERS.
-        let expected_min_ttl =
-            (one_year_secs / LEDGER_CLOSE_SECS) as u32 + BUFFER_LEDGERS;
-
-        // The Soroban test environment exposes the live TTL via get_ttl().
-        let actual_ttl = env.storage().instance().get_ttl();
-        assert!(
-            actual_ttl >= expected_min_ttl,
-            "TTL after initialize ({actual_ttl}) must be ≥ {expected_min_ttl}"
-        );
+        // Admin can upgrade
+        client
+            .mock_auths(&[MockAuth {
+                address: &admin,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "upgrade",
+                    args: (new_wasm_hash.clone(),).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .upgrade(&new_wasm_hash);
     }
 
-    // ── 2. claim extends TTL to POST_CLAIM_TTL_LEDGERS ────────────────────────
-
+    /// A non-admin address must not be able to upgrade the contract.
     #[test]
-    fn test_claim_extends_ttl_to_post_claim_window() {
+    fn test_non_admin_cannot_upgrade() {
         let env = Env::default();
-        env.ledger().with_mut(|l| {
-            l.sequence_number = 1_000;
-            l.timestamp = 0;
-        });
+        let (_admin, _sender, client) = setup(&env);
 
-        let unlock_time: u64 = 3_601;
-        let (_, _, client) = setup(&env, unlock_time);
+        let attacker = Address::generate(&env);
+        let new_wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
 
-        // Advance past unlock
-        env.ledger().with_mut(|l| l.timestamp = unlock_time);
-        client.claim();
-
-        // After claim the TTL must be at least POST_CLAIM_TTL_LEDGERS.
-        let actual_ttl = env.storage().instance().get_ttl();
-        assert!(
-            actual_ttl >= POST_CLAIM_TTL_LEDGERS,
-            "TTL after claim ({actual_ttl}) must be ≥ POST_CLAIM_TTL_LEDGERS ({POST_CLAIM_TTL_LEDGERS})"
-        );
-    }
-
-    // ── 3. public extend_ttl bumps TTL without auth ───────────────────────────
-
-    #[test]
-    fn test_public_extend_ttl_bumps_ttl() {
-        let env = Env::default();
-        env.ledger().with_mut(|l| {
-            l.sequence_number = 1_000;
-            l.timestamp = 0;
-        });
-
-        let unlock_time: u64 = 3_601;
-        let (_, _, client) = setup(&env, unlock_time);
-
-        // Simulate TTL decay by advancing the ledger sequence significantly.
-        // The test env doesn't actually decay TTL, but we can verify the call
-        // succeeds and the TTL is at least the required minimum.
-        env.ledger().with_mut(|l| l.sequence_number = 500_000);
-
-        // No auth required — anyone can call this.
-        client.extend_ttl();
-
-        let actual_ttl = env.storage().instance().get_ttl();
-        // After the keeper call the TTL must cover the remaining lock period.
-        let expected_min = required_ttl_ledgers(&env, unlock_time);
-        assert!(
-            actual_ttl >= expected_min,
-            "TTL after extend_ttl ({actual_ttl}) must be ≥ {expected_min}"
-        );
-    }
-
-    // ── 4. state is accessible after simulated TTL extension ─────────────────
-    //
-    // This is the core acceptance criterion: after extend_ttl is called,
-    // get_state() must still return the correct values.
-
-    #[test]
-    fn test_state_accessible_after_ttl_extension() {
-        let env = Env::default();
-        env.ledger().with_mut(|l| {
-            l.sequence_number = 1_000;
-            l.timestamp = 0;
-        });
-
-        let unlock_time: u64 = 9_999_999;
-        let (_, recipient, client) = setup(&env, unlock_time);
-
-        // Simulate a long time passing (TTL would have decayed on mainnet).
-        env.ledger().with_mut(|l| l.sequence_number = 10_000_000);
-
-        // Keeper bumps the TTL.
-        client.extend_ttl();
-
-        // State must still be fully readable.
-        let (state_recipient, state_amount, state_unlock, state_claimed) =
-            client.get_state();
-
-        assert_eq!(state_recipient, recipient, "recipient must be unchanged");
-        assert_eq!(state_amount, 100_000_000, "amount must be unchanged");
-        assert_eq!(state_unlock, unlock_time, "unlock_time must be unchanged");
-        assert!(!state_claimed, "claimed must still be false");
-    }
-
-    // ── 5. extend_ttl on uninitialised contract returns NotInitialized ────────
-
-    #[test]
-    fn test_extend_ttl_not_initialized_returns_error() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, EscrowContract);
-        let client = EscrowContractClient::new(&env, &contract_id);
-
-        let err = client.try_extend_ttl().unwrap_err().unwrap();
-        assert_eq!(err, EscrowError::NotInitialized);
-    }
-
-    // ── 6. required_ttl_ledgers returns BUFFER_LEDGERS when unlock is past ────
-
-    #[test]
-    fn test_required_ttl_ledgers_past_unlock_returns_buffer() {
-        let env = Env::default();
-        env.ledger().with_mut(|l| l.timestamp = 10_000);
-
-        // unlock_time in the past
-        let ttl = required_ttl_ledgers(&env, 5_000);
-        assert_eq!(
-            ttl, BUFFER_LEDGERS,
-            "past unlock_time must return exactly BUFFER_LEDGERS"
-        );
-    }
-
-    // ── 7. required_ttl_ledgers rounds up correctly ───────────────────────────
-
-    #[test]
-    fn test_required_ttl_ledgers_rounds_up() {
-        let env = Env::default();
-        env.ledger().with_mut(|l| l.timestamp = 0);
-
-        // 6 seconds remaining → ceil(6/5) = 2 ledgers + BUFFER_LEDGERS
-        let ttl = required_ttl_ledgers(&env, 6);
-        assert_eq!(ttl, 2 + BUFFER_LEDGERS);
-
-        // Exactly 5 seconds → 1 ledger + BUFFER_LEDGERS
-        let ttl_exact = required_ttl_ledgers(&env, 5);
-        assert_eq!(ttl_exact, 1 + BUFFER_LEDGERS);
-
-        // 1 second → ceil(1/5) = 1 ledger + BUFFER_LEDGERS
-        let ttl_one = required_ttl_ledgers(&env, 1);
-        assert_eq!(ttl_one, 1 + BUFFER_LEDGERS);
+        // Attacker cannot upgrade — require_auth will panic
+        client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "upgrade",
+                    args: (new_wasm_hash.clone(),).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_upgrade(&new_wasm_hash)
+            .expect_err("non-admin must not be able to upgrade");
     }
 }

@@ -4,32 +4,112 @@
 
 Soroban smart contract that time-locks USDC for a recipient until a predetermined timestamp.
 
+---
+
+## Storage Model
+
+All state is kept in **instance storage** (tied to the contract instance lifetime and
+auto-extended on every invocation). Every key is written once during `initialize` and
+is immutable except `Claimed`, which transitions `false → true` on a successful claim.
+
+| `DataKey`    | Rust type | Description |
+|--------------|-----------|-------------|
+| `Sender`     | `Address` | Gift creator; authorized the initial token transfer |
+| `Recipient`  | `Address` | Address authorized to call `claim` and receive funds |
+| `Token`      | `Address` | USDC contract address (see network addresses below) |
+| `Amount`     | `i128`    | Locked amount in stroops (≥ 10 000 000 = 1 USDC) |
+| `UnlockTime` | `u64`     | Unix timestamp (seconds) after which `claim` is open |
+| `Claimed`    | `bool`    | `false` until claim succeeds; set to `true` atomically before transfer |
+
+### USDC Contract Addresses
+
+| Network  | Address |
+|----------|---------|
+| Mainnet  | `CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75` |
+| Testnet  | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
+
+---
+
+## Contract State Diagram
+
+```
+                        initialize()
+[Uninitialized] ──────────────────────► [Locked]
+                                            │
+                                   ledger.timestamp ≥ unlock_time
+                                            │
+                                            ▼
+                                       [Unlocked]
+                                            │
+                                        claim()
+                                            │
+                                            ▼
+                                        [Claimed]
+```
+
+State transitions:
+
+| From          | Event / Condition                          | To          |
+|---------------|--------------------------------------------|-------------|
+| Uninitialized | `initialize()` called with valid args      | Locked      |
+| Locked        | `ledger.timestamp >= unlock_time`          | Unlocked    |
+| Unlocked      | `claim()` called by recipient              | Claimed     |
+| Any           | `initialize()` called again               | ❌ `AlreadyInitialized` |
+| Claimed       | `claim()` called again                    | ❌ `AlreadyClaimed` |
+| Locked        | `claim()` called before unlock            | ❌ `StillLocked` |
+
+---
+
 ## Error Codes
 
-| Variant | Code | Description |
-|---|---|---|
-| `AlreadyInitialized` | 1 | `initialize` was called on a contract that is already set up |
-| `AlreadyClaimed` | 2 | `claim` was called after the funds were already claimed |
-| `StillLocked` | 3 | `claim` was called before `unlock_time` has passed |
-| `NotInitialized` | 4 | A function requiring state was called before `initialize` |
-| `Unauthorized` | 5 | Reserved for future access-control checks |
-| `AlreadyCancelled` | 6 | Reserved for future cancellation logic |
+| Variant              | Code | When raised |
+|----------------------|------|-------------|
+| `AlreadyInitialized` | 1    | `initialize` called on an already-initialized contract |
+| `AlreadyClaimed`     | 2    | `claim` called after funds were already claimed |
+| `StillLocked`        | 3    | `claim` called before `unlock_time` has passed |
+| `NotInitialized`     | 4    | Any function requiring state called before `initialize` |
+| `Unauthorized`       | 5    | Reserved for future access-control checks |
+| `AlreadyCancelled`   | 6    | Reserved for future cancellation logic |
+| `InvalidAmount`      | 7    | `amount` is below `MIN_AMOUNT` (10 000 000 stroops) |
+| `InvalidUnlockTime`  | 8    | `unlock_time` is not at least `MIN_LOCK_DURATION` (3 600 s) in the future |
 
-## Functions
+---
+
+## Contract Interface
 
 ### `initialize(sender, recipient, token, amount, unlock_time) → Result<(), EscrowError>`
 
-Deploys escrow state and transfers `amount` of `token` from `sender` into the contract.
-Fails with `AlreadyInitialized` if called more than once.
+Stores escrow parameters and transfers `amount` stroops of `token` from `sender`
+into the contract address.
+
+**Preconditions:**
+- Contract must not already be initialized (`AlreadyInitialized`)
+- `amount >= MIN_AMOUNT` (10 000 000 stroops = 1 USDC) (`InvalidAmount`)
+- `unlock_time > ledger.timestamp() + MIN_LOCK_DURATION` (`InvalidUnlockTime`)
+- `sender` must authorize the call (token transfer requires sender auth)
+
+**Emits event:** `("initialized",)` → `(sender, recipient, amount, unlock_time)`
+
+---
 
 Automatically extends the instance TTL to cover `unlock_time` plus a 30-day buffer.
 
 ### `claim() → Result<(), EscrowError>`
 
-Transfers the locked funds to `recipient`. Requires:
-- Caller is `recipient`
-- Current ledger timestamp ≥ `unlock_time`
-- Funds have not already been claimed
+Transfers the locked funds to `recipient`.
+
+**Preconditions:**
+- Contract must be initialized (`NotInitialized`)
+- Caller must be `recipient` (enforced via `require_auth`)
+- `ledger.timestamp() >= unlock_time` (`StillLocked`)
+- Funds must not already be claimed (`AlreadyClaimed`)
+
+**Atomicity:** `Claimed` is set to `true` *before* the token transfer to prevent
+re-entrancy and double-claim attacks.
+
+**Emits event:** `("claimed",)` → `(recipient, amount)`
+
+---
 
 Extends the instance TTL to a 7-day post-claim window so the claimed state remains readable for reconciliation.
 
@@ -39,54 +119,21 @@ Permissionless keeper function — anyone can call this to bump the instance TTL
 
 ### `get_state() → Result<(Address, i128, u64, bool), EscrowError>`
 
-Returns `(recipient, amount, unlock_time, claimed)`. Fails with `NotInitialized` if the contract has not been set up.
+Returns `(recipient, amount, unlock_time, claimed)`.
+
+Fails with `NotInitialized` if `initialize` has not been called.
 
 ---
 
-## Instance Storage TTL Strategy
+## Building & Testing
 
-Soroban instance storage has a finite TTL measured in ledgers. If the TTL expires the contract state is **archived and inaccessible** — a critical failure for long-lived escrows (e.g. 1-year gifts).
+```bash
+# Build WASM
+npm run contract:build          # from repo root
 
-### The problem
+# Run all contract tests
+cd contracts && cargo test
 
-Stellar's default maximum instance TTL is roughly 30 days. A gift with a 1-year unlock time would have its contract state archived ~11 months before the recipient can claim.
-
-### The solution
-
-The contract manages TTL proactively at three points:
-
-| When | What happens |
-|---|---|
-| `initialize` | TTL set to `ceil((unlock_time - now) / 5s) + 518,400 ledgers` (30-day buffer) |
-| `claim` | TTL extended to 120,960 ledgers (7 days) for post-claim readability |
-| `extend_ttl` (public) | Anyone can bump the TTL; fires only when current TTL < 120,960 ledgers (7-day threshold) |
-
-### Ledger arithmetic
-
-Stellar closes roughly one ledger every **5 seconds**:
-
+# Run only double-claim tests
+cd contracts && cargo test double_claim
 ```
-1 day   ≈  17,280 ledgers   (86,400 s ÷ 5 s)
-7 days  ≈ 120,960 ledgers
-30 days ≈ 518,400 ledgers
-1 year  ≈ 6,307,200 ledgers
-```
-
-The required TTL for a given escrow is:
-
-```
-required_ledgers = ceil((unlock_time - now_secs) / 5)
-                 + 518,400   ← 30-day safety buffer
-```
-
-`extend_ttl(threshold, new_ttl)` is a **no-op** when the current TTL is already ≥ `threshold`, so calling it on every `initialize` / `claim` is safe and cheap.
-
-### Keeper responsibility
-
-The platform backend should periodically call `extend_ttl` on all active escrows. Because the function is permissionless, third-party keepers or the recipient themselves can also call it. The 7-day threshold means a daily keeper job has a 7× safety margin before state archival.
-
-```
-Recommended keeper schedule: daily
-Safety margin at 7-day threshold: 7 days
-```
-
