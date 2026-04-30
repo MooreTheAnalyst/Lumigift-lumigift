@@ -92,6 +92,8 @@ into the contract address.
 
 ---
 
+Automatically extends the instance TTL to cover `unlock_time` plus a 30-day buffer.
+
 ### `claim() → Result<(), EscrowError>`
 
 Transfers the locked funds to `recipient`.
@@ -108,6 +110,12 @@ re-entrancy and double-claim attacks.
 **Emits event:** `("claimed",)` → `(recipient, amount)`
 
 ---
+
+Extends the instance TTL to a 7-day post-claim window so the claimed state remains readable for reconciliation.
+
+### `extend_ttl() → Result<(), EscrowError>`
+
+Permissionless keeper function — anyone can call this to bump the instance TTL before it expires. Returns `NotInitialized` if the contract has not been set up.
 
 ### `get_state() → Result<(Address, i128, u64, bool), EscrowError>`
 
