@@ -14,6 +14,7 @@ export interface User {
 export type GiftStatus =
   | "draft"
   | "pending_payment"
+  | "funded"
   | "locked"
   | "unlocked"
   | "claimed"
@@ -23,7 +24,8 @@ export type GiftStatus =
 export interface Gift {
   id: string;
   senderId: string;
-  recipientPhone: string;
+  /** SHA-256 hex digest of the E.164 recipient phone number. Plaintext is never persisted. */
+  recipientPhoneHash: string;
   recipientName: string;
   recipientEmail?: string;
   amountNgn: number;
@@ -54,7 +56,13 @@ export interface Payment {
 }
 
 // ─── Notification ─────────────────────────────────────────────────────────────
-export type NotificationType = "gift_received" | "gift_unlocked" | "gift_claimed" | "otp";
+export type NotificationType =
+  | "gift_received"
+  | "gift_unlocked"
+  | "gift_claimed"
+  | "otp"
+  | "new_device_login"
+  | "suspicious_login_reported";
 
 export interface Notification {
   id: string;

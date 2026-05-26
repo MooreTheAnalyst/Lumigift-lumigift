@@ -1,0 +1,34 @@
+name: Mutation Testing
+
+on:
+  schedule:
+    # Every Monday at 02:00 UTC
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+jobs:
+  mutation-test:
+    name: Stryker Mutation Testing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run Stryker
+        run: npx stryker run
+        env:
+          STRYKER_DASHBOARD_API_KEY: ${{ secrets.STRYKER_DASHBOARD_API_KEY }}
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          retention-days: 30

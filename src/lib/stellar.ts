@@ -8,6 +8,7 @@ import {
   Networks,
 } from "@stellar/stellar-sdk";
 import { serverConfig } from "@/server/config";
+import { logger } from "@/lib/logger";
 import type { StellarAccount, StellarBalance } from "@/types";
 
 const server = new Horizon.Server(serverConfig.stellar.horizonUrl);
@@ -19,7 +20,53 @@ const networkPassphrase =
     ? Networks.PUBLIC
     : Networks.TESTNET;
 
-/** Load a Stellar account. */
+/**
+ * Derives and returns the server's Stellar public key from the configured secret.
+ * Emits an audit log entry so key rotations are traceable in the log stream.
+ */
+export function getServerPublicKey(): string {
+  const keypair = Keypair.fromSecret(serverConfig.stellar.serverSecretKey);
+  const publicKey = keypair.publicKey();
+  logger.info(
+    { event: "stellar_key_loaded", publicKey },
+    "Stellar server signing key loaded"
+  );
+  return publicKey;
+}
+
+/**
+ * Emits a structured audit log entry recording a key rotation event.
+ * Call this after successfully deploying a new signing key.
+ *
+ * @param oldPublicKey - The public key of the rotated-out key.
+ * @param newPublicKey - The public key of the newly active key.
+ * @param rotatedBy - Identifier of the engineer or process that performed the rotation.
+ */
+export function auditLogKeyRotation(
+  oldPublicKey: string,
+  newPublicKey: string,
+  rotatedBy: string
+): void {
+  logger.info(
+    {
+      event: "stellar_key_rotated",
+      oldPublicKey,
+      newPublicKey,
+      rotatedBy,
+      timestamp: new Date().toISOString(),
+    },
+    "STELLAR_SERVER_SECRET_KEY rotated"
+  );
+}
+
+/**
+ * Loads a Stellar account from Horizon and maps its balances to a typed shape.
+ *
+ * @param publicKey - The Stellar public key (G…) of the account to load.
+ * @returns A {@link StellarAccount} with the account's sequence number and balances.
+ * @throws {@link https://stellar.github.io/js-stellar-sdk/HorizonApi.ErrorResponseData.html | HorizonError}
+ *   if the account does not exist on the network.
+ */
 export async function loadAccount(publicKey: string): Promise<StellarAccount> {
   const account = await server.loadAccount(publicKey);
   const balances: StellarBalance[] = account.balances.map((b) => ({
@@ -31,7 +78,13 @@ export async function loadAccount(publicKey: string): Promise<StellarAccount> {
   return { publicKey, sequence: account.sequence, balances };
 }
 
-/** Get USDC balance for an account. Returns "0" if no trustline. */
+/**
+ * Returns the USDC balance for a Stellar account.
+ * Returns `"0"` if the account has no USDC trustline or does not exist.
+ *
+ * @param publicKey - The Stellar public key (G…) of the account.
+ * @returns The USDC balance as a decimal string (e.g. `"10.0000000"`).
+ */
 export async function getUsdcBalance(publicKey: string): Promise<string> {
   try {
     const account = await loadAccount(publicKey);
@@ -44,7 +97,14 @@ export async function getUsdcBalance(publicKey: string): Promise<string> {
   }
 }
 
-/** Build and submit a USDC payment from the server escrow account. */
+/**
+ * Builds and submits a USDC payment from the server escrow account to a recipient.
+ *
+ * @param destinationPublicKey - The recipient's Stellar public key (G…).
+ * @param amount - The USDC amount to send as a decimal string (e.g. `"10.0000000"`).
+ * @returns The transaction hash of the submitted payment.
+ * @throws If the server account has insufficient USDC balance or the transaction fails.
+ */
 export async function sendUsdcPayment(
   destinationPublicKey: string,
   amount: string
@@ -71,7 +131,15 @@ export async function sendUsdcPayment(
   return result.hash;
 }
 
-/** Establish a USDC trustline for a new account keypair. */
+/**
+ * Establishes a USDC trustline for the account identified by `secretKey`.
+ * Must be called before the account can hold or receive USDC.
+ *
+ * @param secretKey - The Stellar secret key (S…) of the account that will trust USDC.
+ * @returns The transaction hash of the submitted change-trust operation.
+ * @throws If the account has insufficient XLM to cover the base reserve or the
+ *   transaction fails.
+ */
 export async function establishUsdcTrustline(secretKey: string): Promise<string> {
   const keypair = Keypair.fromSecret(secretKey);
   const account = await server.loadAccount(keypair.publicKey());

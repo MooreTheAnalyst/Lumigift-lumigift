@@ -1,0 +1,26 @@
+name: OpenAPI Validation
+
+on:
+  pull_request:
+    paths:
+      - "openapi.yaml"
+      - "public/openapi.yaml"
+  push:
+    branches: [main, develop]
+    paths:
+      - "openapi.yaml"
+      - "public/openapi.yaml"
+
+jobs:
+  validate-openapi:
+    name: Validate OpenAPI Spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate openapi.yaml
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - run: npx --yes @redocly/cli@latest lint openapi.yaml --format=stylish

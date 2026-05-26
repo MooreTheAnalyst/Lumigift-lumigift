@@ -23,7 +23,15 @@ export interface InitializePaymentResult {
   reference: string;
 }
 
-/** Initialize a Paystack payment session. */
+/**
+ * Initializes a Paystack payment session and returns the checkout URL.
+ *
+ * @param params - Payment parameters including email, amount in kobo, reference,
+ *   callback URL, and optional metadata.
+ * @returns An object containing the `authorizationUrl` to redirect the user to,
+ *   the `accessCode`, and the `reference`.
+ * @throws If the Paystack API returns a non-2xx response.
+ */
 export async function initializePayment(
   params: InitializePaymentParams
 ): Promise<InitializePaymentResult> {
@@ -42,7 +50,13 @@ export async function initializePayment(
   };
 }
 
-/** Verify a Paystack transaction by reference. */
+/**
+ * Verifies a Paystack transaction by its reference string.
+ *
+ * @param reference - The unique transaction reference (e.g. `lumigift_<uuid>`).
+ * @returns An object with the transaction `status`, `amountKobo`, and `reference`.
+ * @throws If the Paystack API returns a non-2xx response.
+ */
 export async function verifyPayment(reference: string): Promise<{
   status: "success" | "failed" | "pending";
   amountKobo: number;
@@ -56,5 +70,23 @@ export async function verifyPayment(reference: string): Promise<{
   };
 }
 
-/** Convert NGN to kobo. */
+/**
+ * Converts a Nigerian Naira amount to kobo (Paystack's smallest currency unit).
+ * 1 NGN = 100 kobo.
+ *
+ * @param ngn - Amount in Nigerian Naira.
+ * @returns The equivalent amount in kobo, rounded to the nearest integer.
+ */
 export const ngnToKobo = (ngn: number) => Math.round(ngn * 100);
+
+/**
+ * Initiates a refund for a Paystack transaction.
+ *
+ * @param reference - The transaction reference to refund.
+ * @returns An object containing the refund `status`.
+ * @throws If the Paystack API returns a non-2xx response.
+ */
+export async function refundPayment(reference: string): Promise<{ status: string }> {
+  const { data } = await paystackClient.post("/refund", { transaction: reference });
+  return { status: data.data.status };
+}

@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# Run lint-staged (ESLint + Prettier)
+npx lint-staged
+
+# Secret scan — requires gitleaks to be installed.
+# Install: https://github.com/gitleaks/gitleaks#installing
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --config=.gitleaks.toml --redact
+else
+  echo "⚠️  gitleaks not found — skipping secret scan."
+  echo "   Install it: https://github.com/gitleaks/gitleaks#installing"
+  echo "   Then re-run: git commit"
+  exit 1
+fi

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": [
+    "src/lib",
+    "src/server/services"
+  ],
+  "entryPointStrategy": "expand",
+  "out": "docs/api",
+  "name": "Lumigift API Docs",
+  "readme": "none",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "skipErrorChecking": true
+}

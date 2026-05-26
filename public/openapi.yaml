@@ -1,0 +1,658 @@
+openapi: 3.0.3
+info:
+  title: Lumigift API
+  description: |
+    REST API for Lumigift — time-locked cash gifts on the Stellar blockchain.
+
+    **Authentication:** Most endpoints require a valid NextAuth.js session cookie.
+    Obtain a session by completing the phone OTP flow (`POST /api/v1/auth/send-otp`
+    followed by NextAuth credentials sign-in).
+
+    **Base URL:** `https://www.lumigift.com`
+  version: 1.0.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://www.lumigift.com
+    description: Production
+  - url: http://localhost:3000
+    description: Local development
+
+tags:
+  - name: Auth
+    description: Phone OTP authentication
+  - name: Gifts
+    description: Gift lifecycle — create, read, cancel, claim
+  - name: Payments
+    description: Paystack and Stripe payment webhooks
+  - name: Uploads
+    description: Media upload helpers
+  - name: Cron
+    description: Internal scheduler endpoints (Bearer token required)
+
+paths:
+  /api/v1/auth/send-otp:
+    post:
+      tags: [Auth]
+      summary: Send OTP to a phone number
+      description: |
+        Sends a one-time password via SMS. Always returns the same success body
+        regardless of whether the number is registered (prevents enumeration).
+
+        Rate limits: 3 requests per phone per 10 min; 10 requests per IP per hour.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone:
+                  type: string
+                  description: Phone number in any format — normalised to E.164 internally.
+                  example: "+2348012345678"
+      responses:
+        "200":
+          description: OTP sent (or silently dropped if number is not registered)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+              example:
+                success: true
+                data:
+                  message: "If this number is registered, an OTP has been sent."
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /api/v1/auth/report-login:
+    get:
+      tags: [Auth]
+      summary: Report a suspicious login (SMS link)
+      description: Called when a user taps the "this wasn't me" link in the login SMS.
+      parameters:
+        - name: uid
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: fp
+          in: query
+          required: true
+          schema:
+            type: string
+            description: Device fingerprint
+      responses:
+        "200":
+          description: Report received
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    post:
+      tags: [Auth]
+      summary: Report a suspicious login (JSON body)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, fingerprint]
+              properties:
+                userId:
+                  type: string
+                fingerprint:
+                  type: string
+      responses:
+        "200":
+          description: Report received
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/gifts:
+    get:
+      tags: [Gifts]
+      summary: List gifts sent by the authenticated user
+      description: Returns a cursor-paginated list of gifts (10 per page).
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            description: Opaque pagination cursor from the previous response.
+      responses:
+        "200":
+          description: Paginated gift list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          gifts:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/Gift"
+                          nextCursor:
+                            type: string
+                            nullable: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Gifts]
+      summary: Create a new gift
+      description: |
+        Creates a gift record and returns a Paystack payment URL.
+        The gift status is `pending_payment` until the webhook confirms payment.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGiftRequest"
+      responses:
+        "201":
+          description: Gift created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          gift:
+                            $ref: "#/components/schemas/Gift"
+                          paymentUrl:
+                            type: string
+                            format: uri
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/gifts/{id}:
+    get:
+      tags: [Gifts]
+      summary: Get a gift by ID (public claim view)
+      description: Returns a safe subset of gift fields — no sender PII.
+      parameters:
+        - $ref: "#/components/parameters/GiftId"
+      responses:
+        "200":
+          description: Gift found
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PublicGift"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Gifts]
+      summary: Cancel a gift
+      description: |
+        Cancels a gift and triggers a Paystack refund.
+        Only the sender can cancel. Only `locked` or `pending_payment` gifts
+        can be cancelled, and only before the unlock time.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/GiftId"
+      responses:
+        "200":
+          description: Gift cancelled
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Gift"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/gifts/{id}/claim:
+    post:
+      tags: [Gifts]
+      summary: Claim a gift
+      description: |
+        Transfers the locked USDC to the recipient's Stellar address.
+        Requires the gift to be in `locked` status and past its unlock time.
+      parameters:
+        - $ref: "#/components/parameters/GiftId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [giftId, recipientStellarKey]
+              properties:
+                giftId:
+                  type: string
+                  format: uuid
+                recipientStellarKey:
+                  type: string
+                  description: Recipient's Stellar public key (G...)
+                  example: "GABC...XYZ"
+      responses:
+        "200":
+          description: Gift claimed — USDC transferred
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          txHash:
+                            type: string
+                            description: Stellar transaction hash
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/payments:
+    post:
+      tags: [Payments]
+      summary: Paystack webhook
+      description: |
+        Receives `charge.success` events from Paystack.
+        Signature verified via HMAC-SHA512 (`x-paystack-signature` header).
+        Idempotent — duplicate references are silently acknowledged.
+      parameters:
+        - name: x-paystack-signature
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event:
+                  type: string
+                  example: charge.success
+                data:
+                  type: object
+                  properties:
+                    reference:
+                      type: string
+                    status:
+                      type: string
+                    metadata:
+                      type: object
+                      properties:
+                        giftId:
+                          type: string
+      responses:
+        "200":
+          description: Event acknowledged
+        "401":
+          description: Invalid signature
+
+  /api/v1/payments/callback:
+    get:
+      tags: [Payments]
+      summary: Paystack redirect callback
+      description: Paystack redirects the user here after payment. Verifies payment and redirects to success or failure page.
+      parameters:
+        - name: reference
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: giftId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to success or failure page
+
+  /api/v1/payments/stripe/webhook:
+    post:
+      tags: [Payments]
+      summary: Stripe webhook
+      description: |
+        Receives `payment_intent.succeeded` events from Stripe.
+        Signature verified via `stripe-signature` header.
+      parameters:
+        - name: stripe-signature
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Event acknowledged
+        "400":
+          description: Invalid signature or payload
+
+  /api/v1/uploads:
+    post:
+      tags: [Uploads]
+      summary: Upload gift media
+      description: |
+        Uploads an image to Cloudinary. Accepts JPEG, PNG, WebP, or GIF up to 5 MB.
+        Returns the CDN URL and public ID.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Upload successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          url:
+                            type: string
+                            format: uri
+                          publicId:
+                            type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "502":
+          description: Cloudinary upload failed
+
+  /api/v1/uploads/sign:
+    post:
+      tags: [Uploads]
+      summary: Get a signed Cloudinary upload params
+      description: Returns a signed timestamp and params for a direct client-side Cloudinary upload.
+      responses:
+        "200":
+          description: Signed upload parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signature:
+                    type: string
+                  timestamp:
+                    type: integer
+                  folder:
+                    type: string
+                  apiKey:
+                    type: string
+                  cloudName:
+                    type: string
+
+  /api/v1/cron/unlock:
+    get:
+      tags: [Cron]
+      summary: Process gift unlocks
+      description: |
+        Finds all `locked` gifts past their unlock time and transfers USDC to recipients.
+        Called by Vercel Cron or an external scheduler every minute.
+        Requires `Authorization: Bearer <CRON_SECRET>`.
+      security:
+        - cronBearer: []
+      responses:
+        "200":
+          description: Unlock run complete
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          processed:
+                            type: integer
+                          durationMs:
+                            type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/cron/expire:
+    get:
+      tags: [Cron]
+      summary: Expire stale pending-payment gifts
+      description: Marks gifts stuck in `pending_payment` as `expired` after a timeout.
+      security:
+        - cronBearer: []
+      responses:
+        "200":
+          description: Expiry run complete
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: next-auth.session-token
+      description: NextAuth.js session cookie obtained after OTP login.
+    cronBearer:
+      type: http
+      scheme: bearer
+      description: Static secret set in `CRON_SECRET` environment variable.
+
+  parameters:
+    GiftId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Gift UUID
+
+  schemas:
+    SuccessResponse:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          description: Response payload (shape varies by endpoint)
+
+    ErrorResponse:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: "Unauthorized"
+
+    Gift:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        senderId:
+          type: string
+        recipientName:
+          type: string
+        recipientPhone:
+          type: string
+        amountNgn:
+          type: number
+        message:
+          type: string
+          nullable: true
+        mediaUrl:
+          type: string
+          format: uri
+          nullable: true
+        unlockAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending_payment, locked, claimed, cancelled, expired]
+        createdAt:
+          type: string
+          format: date-time
+
+    PublicGift:
+      type: object
+      description: Safe subset of Gift — no sender PII
+      properties:
+        id:
+          type: string
+          format: uuid
+        recipientName:
+          type: string
+        amountNgn:
+          type: number
+        message:
+          type: string
+          nullable: true
+        mediaUrl:
+          type: string
+          format: uri
+          nullable: true
+        unlockAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending_payment, locked, claimed, cancelled, expired]
+
+    CreateGiftRequest:
+      type: object
+      required: [recipientName, recipientPhone, amountNgn, unlockAt]
+      properties:
+        recipientName:
+          type: string
+          example: "Amaka Obi"
+        recipientPhone:
+          type: string
+          example: "+2348012345678"
+        amountNgn:
+          type: number
+          minimum: 100
+          example: 5000
+        message:
+          type: string
+          maxLength: 500
+          nullable: true
+        mediaUrl:
+          type: string
+          format: uri
+          nullable: true
+        unlockAt:
+          type: string
+          format: date-time
+          description: ISO 8601 datetime when the gift unlocks
+
+  responses:
+    BadRequest:
+      description: Invalid request body or parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Authenticated but not authorised for this resource
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: Action not allowed in the current state
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until the rate limit resets
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"

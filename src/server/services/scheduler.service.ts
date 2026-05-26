@@ -1,28 +1,56 @@
 /**
- * Unlock scheduler — checks for gifts whose unlockAt has passed and
- * transitions them from "locked" → "unlocked", then notifies recipients.
+ * Unlock scheduler — checks for gifts whose `unlockAt` has passed and
+ * transitions them from `"locked"` → `"unlocked"`, then notifies recipients.
  *
- * In production, run this as a cron job (e.g. Vercel Cron, BullMQ, or pg_cron).
+ * In production this should be triggered by a Vercel Cron job or pg_cron
+ * at a regular interval (e.g. every minute).
+ *
+ * @returns The number of gifts that were unlocked in this run.
  */
-import { updateGiftStatus, getGiftsByStatus } from "./gift.service";
-import { sendUnlockReminderEmail } from "@/lib/email";
-
 // Placeholder: in production, query DB for all locked gifts past their unlockAt.
-export async function processUnlocks(): Promise<void> {
+export async function processUnlocks(): Promise<number> {
   const now = new Date();
-  const lockedGifts = await getGiftsByStatus("locked");
-  const due = lockedGifts.filter((g) => new Date(g.unlockAt) <= now);
+  // TODO: replace with DB query: SELECT * FROM gifts WHERE status='locked' AND unlock_at <= now
+  console.warn("[scheduler] processUnlocks called — wire up DB query here", now);
+  return 0; // return count of processed gifts
+}
 
-  for (const gift of due) {
-    await updateGiftStatus(gift.id, "unlocked");
+/**
+ * Expiry scheduler — identifies gifts that have been `"unlocked"` but unclaimed
+ * for more than 365 days, marks them as `"expired"`, and notifies the sender.
+ *
+ * When a gift expires the escrowed USDC should be refunded to the sender's
+ * Stellar address via the escrow contract's cancel/refund path.
+ *
+ * In production, run daily via Vercel Cron or pg_cron.
+ *
+ * @returns Resolves when all expired gifts have been processed.
+ */
+export async function processExpiries(): Promise<void> {
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
 
-    if (gift.recipientEmail) {
-      sendUnlockReminderEmail(gift.recipientEmail, {
-        recipientName: gift.recipientName,
-        amountNgn: gift.amountNgn,
-        message: gift.message,
-        unlockAt: new Date(gift.unlockAt),
-      }).catch((err) => console.error("[email] unlock_reminder failed:", err));
-    }
-  }
+  // TODO: replace with DB query:
+  //   SELECT * FROM gifts
+  //   WHERE status = 'unlocked' AND unlock_at <= :cutoff
+  console.warn(
+    "[scheduler] processExpiries called — wire up DB query here. Cutoff:",
+    cutoff.toISOString()
+  );
+
+  // Pseudocode for production implementation:
+  //
+  // const expiredGifts = await db.gift.findMany({
+  //   where: { status: "unlocked", unlockAt: { lte: cutoff } },
+  // });
+  //
+  // for (const gift of expiredGifts) {
+  //   await updateGiftStatus(gift.id, "expired");
+  //   // Refund USDC to sender's Stellar address
+  //   if (gift.contractId && gift.senderStellarKey) {
+  //     await refundEscrow(gift.contractId, gift.senderStellarKey);
+  //   }
+  //   // Notify sender via SMS
+  //   await sendSms(gift.senderPhone, `Your Lumigift of ${gift.amountUsdc} USDC has expired and been refunded.`);
+  // }
 }

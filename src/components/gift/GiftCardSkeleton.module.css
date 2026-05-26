@@ -1,0 +1,64 @@
+.card {
+  background-color: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Shimmer animation */
+@keyframes shimmer {
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
+}
+
+.bone {
+  border-radius: var(--radius-md);
+  background: linear-gradient(
+    90deg,
+    var(--color-bg-elevated) 25%,
+    var(--color-border) 50%,
+    var(--color-bg-elevated) 75%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.headerName {
+  height: 14px;
+  width: 40%;
+}
+
+.headerBadge {
+  height: 20px;
+  width: 64px;
+  border-radius: var(--radius-full);
+}
+
+.amount {
+  height: 28px;
+  width: 55%;
+}
+
+.meta {
+  height: 12px;
+  width: 70%;
+}
+
+.message {
+  height: 40px;
+  width: 100%;
+}

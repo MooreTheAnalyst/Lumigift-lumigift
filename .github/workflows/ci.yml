@@ -5,19 +5,34 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday at 06:00 UTC
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  secret-scan:
+    name: Secret Scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # full history so gitleaks can scan all commits in the PR
+
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
   lint-and-type-check:
     name: Lint & Type Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 20
           cache: npm
@@ -33,13 +48,16 @@ jobs:
       - name: Format check
         run: npm run format:check
 
+      - name: npm audit
+        run: npm audit --audit-level=high
+
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 20
           cache: npm
@@ -50,10 +68,12 @@ jobs:
         run: npm test -- --coverage
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
+          fail_ci_if_error: true
+          threshold: 70
+          comment: true
 
   build:
     name: Next.js Build
@@ -76,10 +96,13 @@ jobs:
       STRIPE_WEBHOOK_SECRET: whsec_placeholder
       TERMII_API_KEY: placeholder
       REDIS_URL: redis://localhost:6379
+      # CRON_SECRET must be set in GitHub Actions secrets and Vercel environment variables.
+      # The /api/cron/unlock endpoint validates: Authorization: Bearer <CRON_SECRET>
+      CRON_SECRET: ci-cron-secret-placeholder
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 20
           cache: npm
@@ -89,11 +112,308 @@ jobs:
       - name: Build
         run: npm run build
 
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    needs: [build]
+    env:
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_PUBLIC_APP_NAME: Lumigift
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ci-secret-placeholder
+      DATABASE_URL: postgresql://user:password@localhost:5432/lumigift
+      STELLAR_NETWORK: testnet
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+      STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+      STELLAR_SERVER_SECRET_KEY: SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      USDC_ISSUER: GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
+      USDC_ASSET_CODE: USDC
+      PAYSTACK_SECRET_KEY: sk_test_placeholder
+      STRIPE_SECRET_KEY: sk_test_placeholder
+      STRIPE_WEBHOOK_SECRET: whsec_placeholder
+      TERMII_API_KEY: placeholder
+      REDIS_URL: redis://localhost:6379
+      CRON_SECRET: ci-cron-secret-placeholder
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci --legacy-peer-deps
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build Next.js
+        run: npm run build
+
+      # playwright.config.ts starts `npm run start` automatically in CI.
+      # No manual server step needed — Playwright waits for the server to be
+      # ready before running any test.
+      - name: Run E2E tests
+        run: npm run e2e
+        env:
+          CI: true
+
+      # Upload all failure artifacts: HTML report, screenshots, and videos.
+      # These are retained for 7 days so engineers can inspect flaky failures.
+      - name: Upload Playwright HTML report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-screenshots
+          path: test-results/**/*.png
+          retention-days: 7
+
+      - name: Upload failure videos
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-videos
+          path: test-results/**/*.webm
+          retention-days: 7
+
+  integration-tests:
+    name: Integration Tests (test DB)
+    runs-on: ubuntu-latest
+    needs: [build]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: lumigift
+          POSTGRES_PASSWORD: lumigift
+          POSTGRES_DB: lumigift_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://lumigift:lumigift@localhost:5432/lumigift_test
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Seed test database
+        run: npm run db:seed:test
+
+      - name: Run integration tests
+        run: npm test -- --testPathPattern="integration" --passWithNoTests
+
+  visual-snapshots:
+    name: Visual Regression (Playwright)
+    runs-on: ubuntu-latest
+    needs: [build]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: lumigift
+          POSTGRES_PASSWORD: lumigift
+          POSTGRES_DB: lumigift_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_PUBLIC_APP_NAME: Lumigift
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ci-secret-placeholder
+      DATABASE_URL: postgresql://lumigift:lumigift@localhost:5432/lumigift_test
+      TEST_DATABASE_URL: postgresql://lumigift:lumigift@localhost:5432/lumigift_test
+      STELLAR_NETWORK: testnet
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+      STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+      STELLAR_SERVER_SECRET_KEY: SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      USDC_ISSUER: GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
+      USDC_ASSET_CODE: USDC
+      PAYSTACK_SECRET_KEY: sk_test_placeholder
+      STRIPE_SECRET_KEY: sk_test_placeholder
+      STRIPE_WEBHOOK_SECRET: whsec_placeholder
+      TERMII_API_KEY: placeholder
+      REDIS_URL: redis://localhost:6379
+      CRON_SECRET: ci-cron-secret-placeholder
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci --legacy-peer-deps
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Seed test database
+        run: npm run db:seed:test
+
+      - name: Build Next.js
+        run: npm run build
+
+      - name: Run visual snapshot tests
+        run: PLAYWRIGHT_BASE_URL=http://localhost:3000 npm run test:visual
+        env:
+          CI: true
+
+      - name: Upload snapshot diff on failure
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: visual-snapshot-diff
+          path: e2e/visual/__snapshots__/
+          retention-days: 7
+
+  license-check:
+    name: License Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci --legacy-peer-deps
+
+      - name: npm license check
+        run: npm run license:check
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1 (stable)
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: contracts
+
+      - name: cargo license check
+        working-directory: contracts
+        run: |
+          cargo install --locked cargo-license
+          cargo license --deny-licenses GPL-2.0 GPL-3.0 AGPL-3.0 LGPL-2.0 LGPL-2.1 LGPL-3.0
+
   contract-test:
     name: Soroban Contract Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1 (stable)
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: contracts
+
+      - name: Run contract tests
+        working-directory: contracts
+        run: cargo test
+
+      - name: cargo audit
+        working-directory: contracts
+        run: |
+          cargo install --locked cargo-audit
+          cargo audit
+
+  contract-fuzz:
+    name: Soroban Contract Fuzz (proptest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1 (stable)
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: contracts
+
+      - name: Run proptest fuzz tests
+        working-directory: contracts
+        run: cargo test --test-threads=4 fuzz_
+
+  contract-build:
+    name: Build WASM Artifact
+    runs-on: ubuntu-latest
+    needs: [contract-test, contract-coverage, contract-fuzz]
+    outputs:
+      contract-id: ${{ steps.deploy.outputs.contract-id }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1 (stable)
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: contracts
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli --features opt
+
+      - name: Build WASM
+        run: npm run contract:build
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: escrow-wasm
+          path: contracts/target/wasm32-unknown-unknown/release/*.wasm
+          retention-days: 7
+
+      - name: Deploy to testnet
+        if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+        id: deploy
+        env:
+          STELLAR_NETWORK: testnet
+          STELLAR_SERVER_SECRET_KEY: ${{ secrets.STELLAR_SERVER_SECRET_KEY }}
+        run: |
+          CONTRACT_ID=$(STELLAR_NETWORK=testnet npm run contract:deploy -- --json 2>/dev/null | tail -1)
+          echo "contract-id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
+
+  contract-bindings-sync:
+    name: Contract Bindings Sync Check
+    runs-on: ubuntu-latest
+    needs: [contract-build]
+    steps:
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -103,6 +423,46 @@ jobs:
         with:
           workspaces: contracts
 
-      - name: Run contract tests
-        working-directory: contracts
-        run: cargo test
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli --features opt
+
+      - name: Build WASM
+        run: npm run contract:build
+
+      - name: Regenerate bindings to temp location
+        env:
+          STELLAR_NETWORK: testnet
+          STELLAR_ESCROW_CONTRACT_ID: PLACEHOLDER_CONTRACT_ID
+        run: |
+          BINDINGS_OUT_DIR=.bindings-check ts-node scripts/generate-bindings.ts
+
+      - name: Diff committed bindings vs regenerated
+        run: |
+          COMMITTED=src/lib/contracts/escrow-client.ts
+          REGENERATED=.bindings-check/escrow-client.ts
+          if [ ! -f "$REGENERATED" ]; then
+            echo "Regenerated bindings file not found at $REGENERATED"
+            exit 1
+          fi
+          # Strip the auto-generated header timestamp lines before diffing
+          if ! diff --unified \
+            <(tail -n +10 "$COMMITTED") \
+            <(tail -n +10 "$REGENERATED"); then
+            echo ""
+            echo "❌ escrow-client.ts is out of sync with the contract WASM."
+            echo "   Run: npm run contract:bindings"
+            echo "   Then commit the updated src/lib/contracts/escrow-client.ts"
+            exit 1
+          fi
+          echo "✅ Bindings are in sync."
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf .bindings-check
