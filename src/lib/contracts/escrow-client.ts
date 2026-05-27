@@ -82,6 +82,8 @@ export class EscrowClient {
   /**
    * Builds an `initialize` transaction envelope ready to be signed and submitted.
    *
+   * @param admin       - Stellar public key of the contract admin (G…)
+   * @param giftId      - Unique identifier for the gift (Symbol)
    * @param sender      - Stellar public key of the gift sender (G…)
    * @param recipient   - Stellar public key of the gift recipient (G…)
    * @param token       - USDC contract address (C…)
@@ -89,6 +91,8 @@ export class EscrowClient {
    * @param unlockTime  - Unix timestamp (u64) after which the gift can be claimed
    */
   async buildInitialize(
+    admin: string,
+    giftId: string,
     sender: string,
     recipient: string,
     token: string,
@@ -104,6 +108,8 @@ export class EscrowClient {
       .addOperation(
         this.contract.call(
           "initialize",
+          new Address(admin).toScVal(),
+          nativeToScVal(giftId, { type: "symbol" }),
           new Address(sender).toScVal(),
           new Address(recipient).toScVal(),
           new Address(token).toScVal(),

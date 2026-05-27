@@ -24,7 +24,11 @@ import {
   CURSOR_GENESIS,
   type EscrowEvent,
 } from "@/lib/contracts/escrow-events";
-import { getGiftByContractId, updateGiftStatusIdempotent } from "./gift.service";
+import {
+  getGiftById,
+  getGiftByContractId,
+  updateGiftStatusIdempotent,
+} from "./gift.service";
 
 const CURSOR_KEY = "escrow:event:cursor";
 
@@ -90,40 +94,51 @@ export async function indexEscrowEvents(): Promise<IndexEventsResult> {
  * already in the target status — idempotent).
  */
 async function applyEvent(event: EscrowEvent): Promise<boolean> {
-  const gift = await getGiftByContractId(event.contractId);
+  // If event has giftId in topic, use it; otherwise fallback to contractId lookup
+  const gift = event.giftId
+    ? await getGiftById(event.giftId)
+    : await getGiftByContractId(event.contractId);
 
   if (!gift) {
-    // Contract ID not tracked in our DB — could be a different deployment
     console.debug(
-      `[event-indexer] no gift found for contractId=${event.contractId}, skipping`
+      `[event-indexer] no gift found for giftId=${event.giftId} contractId=${event.contractId}, skipping`
     );
     return false;
   }
 
   switch (event.type) {
-    case "initialized": {
-      if (gift.status === "locked") return false; // already applied
+    case "gift_created": {
+      if (gift.status === "locked") return false;
       await updateGiftStatusIdempotent(gift.id, "locked");
       console.log(
-        `[event-indexer] initialized → locked  gift=${gift.id} tx=${event.txHash}`
+        `[event-indexer] gift_created → locked  gift=${gift.id} tx=${event.txHash}`
       );
       return true;
     }
 
-    case "claimed": {
-      if (gift.status === "claimed") return false; // already applied
+    case "gift_claimed": {
+      if (gift.status === "claimed") return false;
       await updateGiftStatusIdempotent(gift.id, "claimed");
       console.log(
-        `[event-indexer] claimed → claimed  gift=${gift.id} tx=${event.txHash}`
+        `[event-indexer] gift_claimed → claimed  gift=${gift.id} tx=${event.txHash}`
       );
       return true;
     }
 
-    case "cancelled": {
-      if (gift.status === "cancelled") return false; // already applied
+    case "gift_cancelled": {
+      if (gift.status === "cancelled") return false;
       await updateGiftStatusIdempotent(gift.id, "cancelled");
       console.log(
-        `[event-indexer] cancelled → cancelled  gift=${gift.id} tx=${event.txHash}`
+        `[event-indexer] gift_cancelled → cancelled  gift=${gift.id} tx=${event.txHash}`
+      );
+      return true;
+    }
+
+    case "gift_expired": {
+      if (gift.status === "expired") return false;
+      await updateGiftStatusIdempotent(gift.id, "expired");
+      console.log(
+        `[event-indexer] gift_expired → expired  gift=${gift.id} tx=${event.txHash}`
       );
       return true;
     }

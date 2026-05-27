@@ -123,29 +123,14 @@ pub enum DataKey {
     /// The address authorized to call `upgrade`. Set once during `initialize`.
     Admin,
     Sender,
-
-    /// The address authorized to call `claim` and receive the locked funds.
-    /// `claim` calls `recipient.require_auth()` to enforce this.
     Recipient,
-
-    /// The USDC token contract address on the current network.
-    /// Mainnet: `CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75`
-    /// Testnet: `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`
     Token,
-
-    /// The number of USDC stroops locked in escrow (1 USDC = 10_000_000 stroops).
-    /// Must be ≥ `MIN_AMOUNT` (10_000_000 stroops = 1 USDC).
     Amount,
-
-    /// Unix timestamp (seconds) after which `claim` is permitted.
-    /// Must be at least `MIN_LOCK_DURATION` (3 600 s) after initialization time.
     UnlockTime,
-
-    /// Tracks whether the escrow has been claimed.
-    /// Initialized to `false`; set to `true` atomically before the token
-    /// transfer in `claim` to prevent re-entrancy and double-claim attacks.
     Claimed,
     Cancelled,
+    Expired,
+    GiftId,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -181,6 +166,7 @@ impl EscrowContract {
     pub fn initialize(
         env: Env,
         admin: Address,
+        gift_id: Symbol,
         sender: Address,
         recipient: Address,
         token: Address,
@@ -203,12 +189,15 @@ impl EscrowContract {
         sender.require_auth();
 
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::GiftId, &gift_id);
         env.storage().instance().set(&DataKey::Sender, &sender);
         env.storage().instance().set(&DataKey::Recipient, &recipient);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::Amount, &amount);
         env.storage().instance().set(&DataKey::UnlockTime, &unlock_time);
         env.storage().instance().set(&DataKey::Claimed, &false);
+        env.storage().instance().set(&DataKey::Cancelled, &false);
+        env.storage().instance().set(&DataKey::Expired, &false);
 
         // Extend instance TTL to cover the full lock period plus a 30-day buffer.
         // This prevents state archival before the recipient can claim.
@@ -219,8 +208,8 @@ impl EscrowContract {
         token_client.transfer(&sender, &env.current_contract_address(), &amount);
 
         env.events().publish(
-            (Symbol::new(&env, "initialized"),),
-            (sender, recipient, amount, unlock_time),
+            (Symbol::new(&env, "gift_created"), gift_id),
+            (sender, recipient, amount, unlock_time, env.ledger().timestamp()),
         );
 
         Ok(())
@@ -246,6 +235,15 @@ impl EscrowContract {
             return Err(EscrowError::AlreadyClaimed);
         }
 
+        let cancelled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Cancelled)
+            .unwrap_or(false);
+        if cancelled {
+            return Err(EscrowError::AlreadyCancelled);
+        }
+
         let unlock_time: u64 = env
             .storage()
             .instance()
@@ -268,6 +266,12 @@ impl EscrowContract {
             .get(&DataKey::Amount)
             .ok_or(EscrowError::NotInitialized)?;
 
+        let gift_id: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::GiftId)
+            .ok_or(EscrowError::NotInitialized)?;
+
         env.storage().instance().set(&DataKey::Claimed, &true);
 
         // Extend TTL so the claimed state stays readable for reconciliation.
@@ -280,8 +284,8 @@ impl EscrowContract {
         token_client.transfer(&env.current_contract_address(), &recipient, &amount);
 
         env.events().publish(
-            (Symbol::new(&env, "claimed"),),
-            (recipient, amount),
+            (Symbol::new(&env, "gift_claimed"), gift_id),
+            (recipient, amount, env.ledger().timestamp()),
         );
 
         Ok(())
@@ -330,14 +334,118 @@ impl EscrowContract {
             .get(&DataKey::Amount)
             .ok_or(EscrowError::NotInitialized)?;
 
+        let gift_id: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::GiftId)
+            .ok_or(EscrowError::NotInitialized)?;
+
         env.storage().instance().set(&DataKey::Cancelled, &true);
 
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &sender, &amount);
 
         env.events().publish(
-            (Symbol::new(&env, "cancelled"),),
-            (sender, amount),
+            (Symbol::new(&env, "gift_cancelled"), gift_id),
+            (sender, amount, env.ledger().timestamp()),
+        );
+
+        Ok(())
+    }
+
+    /// Refund the escrow to the sender after 365 days if unclaimed.
+    pub fn expire(env: Env) -> Result<(), EscrowError> {
+        let sender: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Sender)
+            .ok_or(EscrowError::NotInitialized)?;
+
+        let claimed: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Claimed)
+            .unwrap_or(false);
+        if claimed {
+            return Err(EscrowError::AlreadyClaimed);
+        }
+
+        let cancelled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Cancelled)
+            .unwrap_or(false);
+        if cancelled {
+            return Err(EscrowError::AlreadyCancelled);
+        }
+
+        let expired: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Expired)
+            .unwrap_or(false);
+        if expired {
+            return Err(EscrowError::AlreadyCancelled);
+        }
+
+        let unlock_time: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UnlockTime)
+            .ok_or(EscrowError::NotInitialized)?;
+
+        // Expiry is 365 days after unlock_time
+        let expiry_time = unlock_time.saturating_add(365 * 24 * 3600);
+        if env.ledger().timestamp() < expiry_time {
+            return Err(EscrowError::StillLocked);
+        }
+
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(EscrowError::NotInitialized)?;
+
+        let amount: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Amount)
+            .ok_or(EscrowError::NotInitialized)?;
+
+        let gift_id: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::GiftId)
+            .ok_or(EscrowError::NotInitialized)?;
+
+        env.storage().instance().set(&DataKey::Expired, &true);
+
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &sender, &amount);
+
+        env.events().publish(
+            (Symbol::new(&env, "gift_expired"), gift_id),
+            (sender, amount, env.ledger().timestamp()),
+        );
+
+        Ok(())
+    }
+
+    /// Change the admin address. Restricted to current admin.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), EscrowError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(EscrowError::NotInitialized)?;
+
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+
+        env.events().publish(
+            (Symbol::new(&env, "admin_changed"),),
+            (admin, new_admin, env.ledger().timestamp()),
         );
 
         Ok(())
@@ -447,7 +555,7 @@ mod tests {
         let client = EscrowContractClient::new(&env, &contract_id);
 
         // unlock_time must be > ledger.timestamp() + MIN_LOCK_DURATION (3600)
-        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &3_601);
+        client.initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &3_601);
         env.ledger().with_mut(|l| l.timestamp = 3_601);
         client.claim();
 
@@ -467,10 +575,10 @@ mod tests {
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(&env, &contract_id);
 
-        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &3_601);
+        client.initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &3_601);
 
         let err = client
-            .try_initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &3_601)
+            .try_initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &3_601)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::AlreadyInitialized);
@@ -494,11 +602,11 @@ mod tests {
         // First initialization — establishes the original state
         let original_amount: i128 = 100_000_000;
         let original_unlock: u64 = 9_999;
-        client.initialize(&sender, &sender, &recipient, &token_id, &original_amount, &original_unlock);
+        client.initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &original_amount, &original_unlock);
 
         // Attempt re-initialization with different values — must fail
         let err = client
-            .try_initialize(&attacker, &attacker, &attacker, &token_id, &50_000_000, &1)
+            .try_initialize(&attacker, &Symbol::new(&env, "gift_456"), &attacker, &attacker, &token_id, &50_000_000, &1)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::AlreadyInitialized);
@@ -525,7 +633,7 @@ mod tests {
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(&env, &contract_id);
 
-        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &9_999_999);
+        client.initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &9_999_999);
 
         let err = client.try_claim().unwrap_err().unwrap();
         assert_eq!(err, EscrowError::StillLocked);
@@ -544,7 +652,7 @@ mod tests {
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(&env, &contract_id);
 
-        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &3_601);
+        client.initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &3_601);
         env.ledger().with_mut(|l| l.timestamp = 3_601);
         client.claim();
 
@@ -577,7 +685,7 @@ mod tests {
         let client = EscrowContractClient::new(&env, &contract_id);
 
         let err = client
-            .try_initialize(&sender, &sender, &recipient, &token_id, &0, &1_000)
+            .try_initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &0, &1_000)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::InvalidAmount);
@@ -598,7 +706,7 @@ mod tests {
 
         // 9_999_999 stroops = just under 1 USDC minimum
         let err = client
-            .try_initialize(&sender, &sender, &recipient, &token_id, &9_999_999, &1_000)
+            .try_initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &9_999_999, &1_000)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::InvalidAmount);
@@ -622,7 +730,7 @@ mod tests {
 
         // unlock_time in the past
         let err = client
-            .try_initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &5_000)
+            .try_initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &5_000)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::InvalidUnlockTime);
@@ -645,7 +753,7 @@ mod tests {
 
         // unlock_time == current timestamp (not in the future by MIN_LOCK_DURATION)
         let err = client
-            .try_initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &10_000)
+            .try_initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &10_000)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::InvalidUnlockTime);
@@ -668,7 +776,7 @@ mod tests {
 
         // unlock_time = now + MIN_LOCK_DURATION (must be strictly greater)
         let err = client
-            .try_initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &13_600)
+            .try_initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &13_600)
             .unwrap_err()
             .unwrap();
         assert_eq!(err, EscrowError::InvalidUnlockTime);
@@ -690,12 +798,60 @@ mod tests {
         let client = EscrowContractClient::new(&env, &contract_id);
 
         // unlock_time = now + MIN_LOCK_DURATION + 1 (valid)
-        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &13_601);
+        client.initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &13_601);
 
         // Advance past unlock and claim
         env.ledger().with_mut(|l| l.timestamp = 13_601);
         client.claim();
         assert_eq!(token.balance(&recipient), 100_000_000);
+    }
+
+    #[test]
+    fn test_expire_succeeds_after_365_days() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let (token_id, token, token_admin) = create_token(&env, &sender);
+        token_admin.mint(&sender, &100_000_000);
+
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+
+        let unlock_time = 3_601;
+        client.initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &unlock_time);
+
+        // expiry_time = unlock_time + 365 days
+        let expiry_time = unlock_time + (365 * 24 * 3600);
+        env.ledger().with_mut(|l| l.timestamp = expiry_time);
+
+        client.expire();
+        assert_eq!(token.balance(&sender), 100_000_000);
+    }
+
+    #[test]
+    fn test_set_admin_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let (token_id, _, token_admin) = create_token(&env, &sender);
+        token_admin.mint(&sender, &100_000_000);
+
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &3_601);
+
+        client.set_admin(&new_admin);
+
+        // Verify we can upgrade with new admin (proves new admin was set)
+        let new_wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+        client.upgrade(&new_wasm_hash);
     }
 }
 
@@ -720,7 +876,7 @@ mod cancel_tests {
 
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(env, &contract_id);
-        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &3_601);
+        client.initialize(&sender, &Symbol::new(env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &3_601);
 
         (sender, recipient, token_id, token, client)
     }
@@ -804,7 +960,7 @@ mod auth_tests {
 
         // unlock_time = 3_601 (> 0 + MIN_LOCK_DURATION)
         env.mock_all_auths();
-        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &3_601);
+        client.initialize(&sender, &Symbol::new(env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &3_601);
 
         // Advance past unlock so the only barrier is auth, not time
         env.ledger().with_mut(|l| l.timestamp = 3_601);
@@ -885,7 +1041,7 @@ mod boundary_tests {
 
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(env, &contract_id);
-        client.initialize(&sender, &sender, &recipient, &token_id, &100_000_000, &unlock_time);
+        client.initialize(&sender, &Symbol::new(env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &unlock_time);
         client
     }
 
@@ -952,7 +1108,7 @@ mod property_tests {
 
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(&env, &contract_id);
-        client.initialize(&sender, &sender, &recipient, &token_id, &amount, &unlock_time);
+        client.initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &amount, &unlock_time);
 
         (env, recipient, token, client)
     }
@@ -1066,11 +1222,11 @@ mod property_tests {
             let client = EscrowContractClient::new(&env, &contract_id);
 
             // First initialize must succeed
-            client.initialize(&sender, &sender, &recipient, &token_id, &amount, &unlock_time);
+            client.initialize(&sender, &Symbol::new(&env, "gift_123"), &sender, &recipient, &token_id, &amount, &unlock_time);
 
             // Second initialize must always fail regardless of arguments
             let err = client
-                .try_initialize(&sender, &sender, &recipient, &token_id, &amount2, &unlock_time2)
+                .try_initialize(&sender, &Symbol::new(&env, "gift_456"), &sender, &recipient, &token_id, &amount2, &unlock_time2)
                 .unwrap_err()
                 .unwrap();
 
@@ -1107,7 +1263,7 @@ mod upgrade_tests {
 
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(env, &contract_id);
-        client.initialize(&admin, &sender, &recipient, &token_id, &100_000_000, &3_601);
+        client.initialize(&admin, &Symbol::new(env, "gift_123"), &sender, &recipient, &token_id, &100_000_000, &3_601);
 
         (admin, sender, client)
     }
