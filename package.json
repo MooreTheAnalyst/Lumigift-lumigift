@@ -30,7 +30,7 @@
     "test": "jest --passWithNoTests",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "contract:build": "cd contracts && stellar contract build",
+    "contract:build": "bash scripts/build-contract.sh",
     "contract:test": "cd contracts && cargo test",
     "contract:deploy": "ts-node scripts/deploy-contract.ts",
     "prepare": "husky"
