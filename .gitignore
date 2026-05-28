@@ -41,3 +41,14 @@ contracts/target/
 # Misc
 *.tsbuildinfo
 next-env.d.ts
+
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/terraform.tfvars
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.backup
+infra/terraform/.terraform.lock.hcl
+
+# Load test result files (uploaded as CI artifacts instead)
+load-tests/results/
+contracts/escrow/test_snapshots/

@@ -1,0 +1,10 @@
+{
+  "testnet": {
+    "escrow": "",
+    "deployedAt": ""
+  },
+  "mainnet": {
+    "escrow": "",
+    "deployedAt": ""
+  }
+}

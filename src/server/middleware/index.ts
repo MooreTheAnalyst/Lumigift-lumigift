@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import * as Sentry from "@sentry/nextjs";
 import { authOptions } from "@/lib/auth";
 import { ApiError } from "@/types";
+import { requestLogger, getCorrelationId } from "@/lib/logger";
+
+// Re-export CSRF middleware so callers can import from one place
+export { withCsrf } from "@/lib/csrf";
+
+// Re-export validation helpers so callers can import from one place
+export { validateRequest, validationErrorResponse, formatZodErrors, searchParamsToObject } from "./validate";
 
 type Handler = (_req: NextRequest, _context?: unknown) => Promise<NextResponse>;
 
@@ -19,18 +27,49 @@ export function withAuth(handler: Handler): Handler {
   };
 }
 
+const API_VERSION = "v1";
+
 /** Wraps a route handler with a try/catch — returns 500 on unhandled errors. */
 export function withErrorHandler(handler: Handler): Handler {
   return async (req, context) => {
+    const correlationId = getCorrelationId(req.headers);
+    const log = requestLogger(correlationId);
     try {
-      return await handler(req, context);
+      const res = await handler(req, context);
+      res.headers.set("X-API-Version", API_VERSION);
+      res.headers.set("x-correlation-id", correlationId);
+      return res;
     } catch (err) {
-      console.error("[API Error]", err);
-      return NextResponse.json<ApiError>(
+      log.error({ err }, "[API Error]");
+      const res = NextResponse.json<ApiError>(
         { success: false, error: "Internal server error", code: "INTERNAL_ERROR" },
         { status: 500 }
       );
+      res.headers.set("X-API-Version", API_VERSION);
+      res.headers.set("x-correlation-id", correlationId);
+      return res;
     }
+  };
+}
+
+/** Wraps a route handler — returns 401 if no session, 403 if not admin. */
+export function withAdmin(handler: Handler): Handler {
+  return async (req, context) => {
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json<ApiError>(
+        { success: false, error: "Unauthorized", code: "UNAUTHORIZED" },
+        { status: 401 }
+      );
+    }
+    const user = session.user as { id: string; role?: string };
+    if (user.role !== "admin") {
+      return NextResponse.json<ApiError>(
+        { success: false, error: "Forbidden", code: "FORBIDDEN" },
+        { status: 403 }
+      );
+    }
+    return handler(req, context);
   };
 }
 

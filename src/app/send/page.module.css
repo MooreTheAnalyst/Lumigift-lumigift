@@ -6,3 +6,16 @@
   display: flex;
   justify-content: center;
 }
+
+/* ─── Mobile ──────────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .page {
+    padding: var(--space-8) 0;
+  }
+}
+
+@media (max-width: 375px) {
+  .page {
+    padding: var(--space-6) 0;
+  }
+}

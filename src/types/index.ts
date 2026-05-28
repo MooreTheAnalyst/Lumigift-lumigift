@@ -14,6 +14,7 @@ export interface User {
 export type GiftStatus =
   | "draft"
   | "pending_payment"
+  | "funded"
   | "locked"
   | "unlocked"
   | "claimed"
@@ -23,8 +24,10 @@ export type GiftStatus =
 export interface Gift {
   id: string;
   senderId: string;
-  recipientPhone: string;
+  /** SHA-256 hex digest of the E.164 recipient phone number. Plaintext is never persisted. */
+  recipientPhoneHash: string;
   recipientName: string;
+  recipientEmail?: string;
   amountNgn: number;
   amountUsdc: string; // on-chain amount as string to preserve precision
   message?: string;
@@ -53,7 +56,13 @@ export interface Payment {
 }
 
 // ─── Notification ─────────────────────────────────────────────────────────────
-export type NotificationType = "gift_received" | "gift_unlocked" | "gift_claimed" | "otp";
+export type NotificationType =
+  | "gift_received"
+  | "gift_unlocked"
+  | "gift_claimed"
+  | "otp"
+  | "new_device_login"
+  | "suspicious_login_reported";
 
 export interface Notification {
   id: string;
@@ -75,6 +84,17 @@ export interface ApiError {
   success: false;
   error: string;
   code?: string;
+  /** Structured field-level validation errors (populated for 400 validation failures). */
+  errors?: Array<{ path: string; message: string }>;
+}
+
+/**
+ * Specific variant of ApiError used when Zod schema validation fails.
+ * Always includes a structured `errors` array.
+ */
+export interface ApiValidationError extends ApiError {
+  error: "Validation failed";
+  errors: Array<{ path: string; message: string }>;
 }
 
 export type ApiResponse<T> = ApiSuccess<T> | ApiError;

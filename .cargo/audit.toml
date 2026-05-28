@@ -1,0 +1,4 @@
+[advisories]
+# Add advisory IDs here to ignore known false positives, e.g.:
+# ignore = ["RUSTSEC-2023-XXXX"]
+ignore = []

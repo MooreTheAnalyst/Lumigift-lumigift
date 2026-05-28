@@ -2,19 +2,29 @@ import { NextRequest, NextResponse } from "next/server";
 import { processUnlocks } from "@/server/services/scheduler.service";
 import type { ApiResponse } from "@/types";
 
-/** Called by Vercel Cron or an external scheduler every minute. */
-export const GET = async (req: NextRequest) => {
+/**
+ * GET /api/cron/unlock
+ *
+ * Triggered by Vercel Cron (or any scheduler) to unlock gifts whose
+ * `unlockAt` timestamp has passed.
+ *
+ * Authentication: Bearer token checked against CRON_SECRET env var.
+ */
+export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const cronSecret = process.env.CRON_SECRET;
+
+  if (!authHeader || !cronSecret || authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json<ApiResponse<never>>(
-      { success: false, error: "Unauthorized" },
+      { success: false, error: "Unauthorized", code: "UNAUTHORIZED" },
       { status: 401 }
     );
   }
 
-  await processUnlocks();
-  return NextResponse.json<ApiResponse<{ message: string }>>({
+  const unlocked = await processUnlocks();
+
+  return NextResponse.json<ApiResponse<{ unlocked: number }>>({
     success: true,
-    data: { message: "Unlock check complete" },
+    data: { unlocked },
   });
-};
+}

@@ -1,24 +1,46 @@
-import { z } from "zod";
+/**
+ * @file schemas.ts
+ * Backward-compatibility re-export shim.
+ *
+ * Schema definitions have been moved to `src/lib/schemas/` so they can be
+ * shared between frontend and backend. All existing imports from
+ * `@/types/schemas` continue to work without any changes.
+ */
+
+export {
+  createGiftSchema,
+  verifyOtpSchema,
+  claimGiftSchema,
+} from "@/lib/schemas";
 
 export const createGiftSchema = z.object({
-  recipientPhone: z
-    .string()
-    .regex(/^\+?[1-9]\d{9,14}$/, "Enter a valid phone number"),
+  recipientPhone: e164Phone,
   recipientName: z.string().min(2, "Name must be at least 2 characters"),
   amountNgn: z
     .number()
-    .min(500, "Minimum gift amount is ₦500")
-    .max(10_000_000, "Maximum gift amount is ₦10,000,000"),
+    .min(
+      parseInt(process.env.GIFT_MIN_AMOUNT_NGN ?? "500", 10),
+      `Minimum gift amount is ${formatNGN(parseInt(process.env.GIFT_MIN_AMOUNT_NGN ?? "500", 10))}`
+    )
+    .max(
+      parseInt(process.env.GIFT_MAX_AMOUNT_NGN ?? "500000", 10),
+      `Maximum gift amount is ${formatNGN(parseInt(process.env.GIFT_MAX_AMOUNT_NGN ?? "500000", 10))}`
+    ),
   message: z.string().max(500, "Message cannot exceed 500 characters").optional(),
   unlockAt: z
     .string()
     .datetime()
-    .refine((val) => new Date(val) > new Date(), "Unlock date must be in the future"),
+    .refine(
+      (val) => new Date(val).getTime() >= Date.now() + 60 * 60 * 1000,
+      "Unlock date must be at least 1 hour from now"
+    ),
   paymentProvider: z.enum(["paystack", "stripe"]),
+  recipientEmail: z.string().email("Enter a valid email address").optional(),
+  recipientIsRegistered: z.boolean().default(true),
 });
 
 export const verifyOtpSchema = z.object({
-  phone: z.string().regex(/^\+?[1-9]\d{9,14}$/),
+  phone: e164Phone,
   otp: z.string().length(6, "OTP must be 6 digits"),
 });
 

@@ -13,6 +13,7 @@ html {
   font-size: 16px;
   scroll-behavior: smooth;
   -webkit-text-size-adjust: 100%;
+  color-scheme: var(--color-scheme, dark);
 }
 
 body {
@@ -89,4 +90,26 @@ ol {
   outline: 2px solid var(--color-brand-primary);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
+}
+
+/* ─── Mobile baseline ─────────────────────────────────────────────────────── */
+html,
+body {
+  overflow-x: hidden;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding-inline: var(--space-4);
+  }
+
+  /* Ensure inputs and buttons are touch-friendly (min 44px tap target) */
+  .input {
+    min-height: 44px;
+    font-size: var(--text-base); /* prevent iOS zoom on focus */
+  }
+
+  .btn {
+    min-height: 44px;
+  }
 }

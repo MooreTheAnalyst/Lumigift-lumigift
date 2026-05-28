@@ -1,0 +1,42 @@
+# Gitleaks configuration
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+
+title = "Lumigift secret scanning rules"
+
+[extend]
+# Extend the default ruleset shipped with gitleaks
+useDefault = true
+
+# ─── Allowlist (known false positives) ───────────────────────────────────────
+# Add entries here for test fixtures, placeholder values, and example files
+# that match secret patterns but contain no real credentials.
+
+[[rules.allowlist]]
+description = "CI placeholder values in ci.yml"
+paths = [".github/workflows/ci.yml"]
+regexes = [
+  "ci-secret-placeholder",
+  "ci-cron-secret-placeholder",
+  "sk_test_placeholder",
+  "whsec_placeholder",
+  "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+]
+
+[[rules.allowlist]]
+description = "Example env file — no real secrets"
+paths = [".env.example"]
+regexTarget = "line"
+regexes = [".*"]
+
+[[rules.allowlist]]
+description = "Stellar testnet public issuer address (not a secret)"
+regexes = ["GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"]
+
+[[rules.allowlist]]
+description = "Stellar testnet horizon URL (not a secret)"
+regexes = ["https://horizon-testnet\\.stellar\\.org"]
+
+[[rules.allowlist]]
+description = "Placeholder Termii and Paystack keys in tests/docs"
+paths = ["src/**/__tests__/**", "docs/**"]
+regexes = ["placeholder", "sk_test_"]
