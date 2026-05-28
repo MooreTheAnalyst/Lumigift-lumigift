@@ -193,6 +193,16 @@ impl EscrowContract {
             return Err(EscrowError::InvalidUnlockTime);
         }
 
+        // Block new gift creation when paused
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if paused {
+            panic!("contract is paused");
+        }
+
         sender.require_auth();
 
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -529,6 +539,57 @@ impl EscrowContract {
         );
 
         Ok(())
+    }
+
+    /// Set the admin address. Can only be called once (before any admin is set).
+    pub fn set_admin(env: Env, admin: Address) {
+        if env.storage().instance().has(&DataKey::Admin) {
+            panic!("admin already set");
+        }
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
+    }
+
+    /// Pause new gift creation. Restricted to admin.
+    pub fn pause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Paused, &true);
+
+        env.events().publish(
+            (Symbol::new(&env, "paused"),),
+            (admin,),
+        );
+    }
+
+    /// Unpause new gift creation. Restricted to admin.
+    pub fn unpause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Paused, &false);
+
+        env.events().publish(
+            (Symbol::new(&env, "unpaused"),),
+            (admin,),
+        );
+    }
+
+    /// Read-only: returns whether the contract is paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
     }
 }
 
@@ -1436,5 +1497,93 @@ mod upgrade_tests {
 
         client.claim(); // first claim succeeds
         client.claim(); // simulated re-entry / second call must panic
+    }
+
+    #[test]
+    fn test_pause_blocks_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let (token_id, _, token_admin) = create_token(&env, &sender);
+        token_admin.mint(&sender, &100_000_000);
+
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+
+        client.set_admin(&admin);
+        client.pause();
+
+        assert!(client.is_paused());
+
+        // initialize should panic when paused
+        let result = std::panic::catch_unwind(|| {
+            client.initialize(&sender, &recipient, &token_id, &100_000_000, &9_999_999);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unpause_allows_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let (token_id, _, token_admin) = create_token(&env, &sender);
+        token_admin.mint(&sender, &100_000_000);
+
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+
+        client.set_admin(&admin);
+        client.pause();
+        client.unpause();
+
+        assert!(!client.is_paused());
+        // initialize should succeed after unpause
+        client.initialize(&sender, &recipient, &token_id, &100_000_000, &9_999_999);
+    }
+
+    #[test]
+    fn test_claim_still_works_when_paused() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let (token_id, token, token_admin) = create_token(&env, &sender);
+        token_admin.mint(&sender, &100_000_000);
+
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+
+        // Initialize before pausing
+        client.initialize(&sender, &recipient, &token_id, &100_000_000, &1_000);
+
+        client.set_admin(&admin);
+        client.pause();
+
+        // Advance past unlock time and claim — should still work
+        env.ledger().with_mut(|l| l.timestamp = 1_001);
+        client.claim();
+
+        assert_eq!(token.balance(&recipient), 100_000_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "admin not set")]
+    fn test_pause_requires_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+
+        client.pause(); // should panic — no admin set
     }
 }
