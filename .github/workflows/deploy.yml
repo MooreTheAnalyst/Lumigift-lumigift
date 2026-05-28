@@ -55,9 +55,43 @@ jobs:
 
       # Swap this step for your hosting provider (Vercel, Railway, Fly.io, etc.)
       - name: Deploy to Vercel
+        id: deploy
         uses: amondnet/vercel-action@v42
         with:
           vercel-token: ${{ secrets.VERCEL_TOKEN }}
           vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
           vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
           vercel-args: "--prod"
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run smoke tests against production
+        id: smoke
+        run: npm run e2e -- --grep "@smoke"
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
+          CI: true
+
+      - name: Link Vercel project for rollback
+        if: ${{ failure() && steps.smoke.outcome == 'failure' }}
+        run: npx vercel@latest link --yes --project "$VERCEL_PROJECT_ID" --token "$VERCEL_TOKEN" --scope "$VERCEL_ORG_ID"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Roll back production if smoke tests fail
+        if: ${{ failure() && steps.smoke.outcome == 'failure' }}
+        run: npx vercel@latest rollback --token "$VERCEL_TOKEN" --scope "$VERCEL_ORG_ID" --timeout=120s
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+
+      - name: Upload smoke test report on failure
+        if: ${{ failure() && steps.smoke.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-smoke-report
+          path: playwright-report/
+          retention-days: 7

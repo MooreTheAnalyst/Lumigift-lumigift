@@ -8,9 +8,9 @@ import { serverConfig } from "@/server/config";
 import { assertValidTransition } from "./gift-state-machine";
 import { createGiftInvitation } from "./invitation.service";
 import { sendGiftInvitation } from "@/lib/sms";
+import { sendGiftReceivedEmail } from "@/lib/email";
 import { stripHtmlTags } from "@/lib/sanitize";
 import { createAuditLog } from "./audit.service";
-import { sendGiftReceivedEmail } from "@/lib/email";
 
 // ─── Exchange rate helper ─────────────────────────────────────────────────────
 import { getExchangeRate, lockExchangeRate } from "@/server/services/exchange-rate.service";
@@ -181,9 +181,14 @@ export async function updateGiftStatus(id: string, status: GiftStatus): Promise<
   gifts.set(id, gift);
 
   // Create audit log for status change
-  const eventType = status === "funded" ? "gift_funded" as const : 
-                    status === "claimed" ? "gift_claimed" as const :
-                    status === "cancelled" ? "gift_cancelled" as const : null;
+  const eventType =
+    status === "funded"
+      ? ("gift_funded" as const)
+      : status === "claimed"
+        ? ("gift_claimed" as const)
+        : status === "cancelled"
+          ? ("gift_cancelled" as const)
+          : null;
 
   if (eventType) {
     await createAuditLog({
