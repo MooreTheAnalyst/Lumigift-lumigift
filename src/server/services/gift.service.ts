@@ -396,3 +396,7 @@ export async function updateGiftStatusIdempotent(
 export async function getGiftsByStatus(status: GiftStatus): Promise<Gift[]> {
   return [...gifts.values()].filter((g) => g.status === status);
 }
+
+export async function getAllGifts(): Promise<Gift[]> {
+  return [...gifts.values()];
+}

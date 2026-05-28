@@ -52,6 +52,27 @@ export function withErrorHandler(handler: Handler): Handler {
   };
 }
 
+/** Wraps a route handler — returns 401 if no session, 403 if not admin. */
+export function withAdmin(handler: Handler): Handler {
+  return async (req, context) => {
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json<ApiError>(
+        { success: false, error: "Unauthorized", code: "UNAUTHORIZED" },
+        { status: 401 }
+      );
+    }
+    const user = session.user as { id: string; role?: string };
+    if (user.role !== "admin") {
+      return NextResponse.json<ApiError>(
+        { success: false, error: "Forbidden", code: "FORBIDDEN" },
+        { status: 403 }
+      );
+    }
+    return handler(req, context);
+  };
+}
+
 /** Rate-limit helper (simple in-memory; swap for Redis in production). */
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
