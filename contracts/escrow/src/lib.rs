@@ -2,6 +2,16 @@
 //!
 //! Locks USDC for a recipient until a predetermined timestamp.
 //! Only the designated recipient can claim after the unlock time.
+//!
+//! # Storage strategy
+//! | Key         | Storage type | Rationale |
+//! |-------------|--------------|-----------|
+//! | Recipient   | Persistent   | Needed for auth on every claim attempt |
+//! | UnlockTime  | Persistent   | Needed for every claim attempt |
+//! | Claimed     | Persistent   | Critical guard — must survive ledger expiry |
+//! | Sender      | Temporary    | Only used once during initialize for auth |
+//! | Token       | Temporary    | Only needed during claim; expires after use |
+//! | Amount      | Temporary    | Only needed during claim; expires after use |
 
 #![no_std]
 
@@ -11,14 +21,20 @@ use soroban_sdk::{
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
+/// Keys stored in **persistent** instance storage (critical state).
 #[contracttype]
-pub enum DataKey {
-    Sender,
+pub enum PersistentKey {
     Recipient,
-    Token,
-    Amount,
     UnlockTime,
     Claimed,
+}
+
+/// Keys stored in **temporary** storage (short-lived, lower ledger cost).
+#[contracttype]
+pub enum TempKey {
+    Sender,
+    Token,
+    Amount,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -44,18 +60,21 @@ impl EscrowContract {
         unlock_time: u64,
     ) {
         // Prevent re-initialization
-        if env.storage().instance().has(&DataKey::Sender) {
+        if env.storage().persistent().has(&PersistentKey::Recipient) {
             panic!("already initialized");
         }
 
         sender.require_auth();
 
-        env.storage().instance().set(&DataKey::Sender, &sender);
-        env.storage().instance().set(&DataKey::Recipient, &recipient);
-        env.storage().instance().set(&DataKey::Token, &token);
-        env.storage().instance().set(&DataKey::Amount, &amount);
-        env.storage().instance().set(&DataKey::UnlockTime, &unlock_time);
-        env.storage().instance().set(&DataKey::Claimed, &false);
+        // Persistent: critical state needed for every claim attempt
+        env.storage().persistent().set(&PersistentKey::Recipient, &recipient);
+        env.storage().persistent().set(&PersistentKey::UnlockTime, &unlock_time);
+        env.storage().persistent().set(&PersistentKey::Claimed, &false);
+
+        // Temporary: only needed during the single claim interaction
+        env.storage().temporary().set(&TempKey::Sender, &sender);
+        env.storage().temporary().set(&TempKey::Token, &token);
+        env.storage().temporary().set(&TempKey::Amount, &amount);
 
         // Transfer USDC from sender into this contract
         let token_client = token::Client::new(&env, &token);
@@ -71,16 +90,16 @@ impl EscrowContract {
     pub fn claim(env: Env) {
         let recipient: Address = env
             .storage()
-            .instance()
-            .get(&DataKey::Recipient)
+            .persistent()
+            .get(&PersistentKey::Recipient)
             .expect("not initialized");
 
         recipient.require_auth();
 
         let claimed: bool = env
             .storage()
-            .instance()
-            .get(&DataKey::Claimed)
+            .persistent()
+            .get(&PersistentKey::Claimed)
             .unwrap_or(false);
 
         if claimed {
@@ -89,8 +108,8 @@ impl EscrowContract {
 
         let unlock_time: u64 = env
             .storage()
-            .instance()
-            .get(&DataKey::UnlockTime)
+            .persistent()
+            .get(&PersistentKey::UnlockTime)
             .expect("not initialized");
 
         let now = env.ledger().timestamp();
@@ -100,17 +119,18 @@ impl EscrowContract {
 
         let token: Address = env
             .storage()
-            .instance()
-            .get(&DataKey::Token)
+            .temporary()
+            .get(&TempKey::Token)
             .expect("not initialized");
 
         let amount: i128 = env
             .storage()
-            .instance()
-            .get(&DataKey::Amount)
+            .temporary()
+            .get(&TempKey::Amount)
             .expect("not initialized");
 
-        env.storage().instance().set(&DataKey::Claimed, &true);
+        // Effects before interactions (reentrancy guard)
+        env.storage().persistent().set(&PersistentKey::Claimed, &true);
 
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &recipient, &amount);
@@ -125,23 +145,23 @@ impl EscrowContract {
     pub fn get_state(env: Env) -> (Address, i128, u64, bool) {
         let recipient: Address = env
             .storage()
-            .instance()
-            .get(&DataKey::Recipient)
+            .persistent()
+            .get(&PersistentKey::Recipient)
             .expect("not initialized");
         let amount: i128 = env
             .storage()
-            .instance()
-            .get(&DataKey::Amount)
-            .expect("not initialized");
+            .temporary()
+            .get(&TempKey::Amount)
+            .unwrap_or(0);
         let unlock_time: u64 = env
             .storage()
-            .instance()
-            .get(&DataKey::UnlockTime)
+            .persistent()
+            .get(&PersistentKey::UnlockTime)
             .expect("not initialized");
         let claimed: bool = env
             .storage()
-            .instance()
-            .get(&DataKey::Claimed)
+            .persistent()
+            .get(&PersistentKey::Claimed)
             .unwrap_or(false);
 
         (recipient, amount, unlock_time, claimed)
