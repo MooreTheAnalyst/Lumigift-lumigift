@@ -1,6 +1,10 @@
 import { sendUsdcPayment } from "@/lib/stellar";
 import { updateGiftStatus, storeClaimTxHash } from "./gift.service";
-import { createEscrowClient, EscrowContractError, EscrowError } from "@/lib/contracts/escrow-client";
+import {
+  createEscrowClient,
+  EscrowContractError,
+  EscrowError,
+} from "@/lib/contracts/escrow-client";
 import { sendClaimConfirmationEmail } from "@/lib/email";
 import type { Gift } from "@/types";
 
