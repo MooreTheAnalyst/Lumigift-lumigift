@@ -69,3 +69,7 @@ export async function getGiftsBySender(senderId: string): Promise<Gift[]> {
 export async function getGiftsByRecipient(phone: string): Promise<Gift[]> {
   return [...gifts.values()].filter((g) => g.recipientPhone === phone);
 }
+
+export async function getAllGifts(): Promise<Gift[]> {
+  return [...gifts.values()];
+}
