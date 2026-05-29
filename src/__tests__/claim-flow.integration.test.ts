@@ -19,6 +19,11 @@ import type { Gift } from "@/types";
 
 jest.mock("@/lib/stellar", () => ({
   sendUsdcPayment: jest.fn(),
+  validateStellarAccount: jest.fn().mockResolvedValue({ valid: true }),
+}));
+
+jest.mock("@/lib/queues/stellar-tx.queue", () => ({
+  enqueueClaim: jest.fn().mockResolvedValue("job-id-abc123"),
 }));
 
 jest.mock("@/lib/paystack", () => ({
@@ -33,6 +38,9 @@ jest.mock("@/server/config", () => ({
     app: { url: "http://localhost:3000" },
     stellar: { horizonUrl: "", network: "testnet", serverSecretKey: "" },
     usdc: { assetCode: "USDC", issuer: "" },
+    database: { url: "postgres://localhost/test", poolMin: 1, poolMax: 5, idleTimeoutMs: 10000 },
+    giftLimits: { dailyLimitNgn: 1_000_000 },
+    redis: { url: "redis://localhost:6379" },
   },
 }));
 
@@ -81,14 +89,11 @@ describe("Gift claim flow — integration", () => {
 
     const result = await claimGift(gift, RECIPIENT_STELLAR_KEY);
 
-    expect(mockSendUsdc).toHaveBeenCalledWith(
-      RECIPIENT_STELLAR_KEY,
-      gift.amountUsdc
-    );
-    expect(result.txHash).toBe("tx-hash-abc123");
+    expect(result.jobId).toBe("job-id-abc123");
 
-    const updated = await getGiftById(gift.id);
-    expect(updated?.status).toBe("claimed");
+    // Status is updated by the worker, not synchronously — verify enqueue was called
+    const { enqueueClaim } = await import("@/lib/queues/stellar-tx.queue");
+    expect(enqueueClaim).toHaveBeenCalledWith(gift.id, RECIPIENT_STELLAR_KEY);
   });
 
   // 2. Claim rejected before unlock time

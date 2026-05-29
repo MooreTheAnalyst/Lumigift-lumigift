@@ -1,5 +1,6 @@
 "use client";
 
+import { GiftCardSkeleton } from "@/components/gift/GiftCardSkeleton";
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
@@ -56,7 +57,12 @@ export default function DashboardPage() {
     return (
       <div className={styles.page}>
         <div className="container">
-          <p>Loading gifts…</p>
+          <div className={styles.header}>
+            <h1 className={styles.title}>Your Gifts</h1>
+          </div>
+          <div className={styles.grid}>
+            <GiftCardSkeleton count={6} />
+          </div>
         </div>
       </div>
     );
