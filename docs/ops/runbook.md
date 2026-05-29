@@ -214,7 +214,7 @@ This runbook provides procedures for handling common production incidents in Lum
    - Scale database instance if needed
 
 2. **Application Issues**:
-   - Roll back recent deployments if suspected
+   - Roll back recent deployments if suspected (see `docs/ops/blue-green-deployment.md` for instant rollback instructions)
    - Implement caching for expensive operations
    - Scale Vercel function concurrency
 
