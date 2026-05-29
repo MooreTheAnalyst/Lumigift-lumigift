@@ -1,0 +1,37 @@
+name: Configure Sentry Alerts
+
+on:
+  workflow_dispatch:
+
+jobs:
+  configure-alerts:
+    name: Set up Sentry error rate alerts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Sentry alert rule for error rate spikes
+        run: |
+          curl -sf -X POST "https://sentry.io/api/0/projects/${{ secrets.SENTRY_ORG }}/${{ secrets.SENTRY_PROJECT }}/alert-rules/" \
+            -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "High Error Rate",
+              "environment": "production",
+              "dataset": "events",
+              "query": "level:error",
+              "aggregate": "count()",
+              "timeWindow": 5,
+              "thresholdType": 0,
+              "resolveThreshold": 10,
+              "triggers": [
+                {
+                  "label": "critical",
+                  "alertThreshold": 50,
+                  "actions": [{"type": "email", "targetType": "team"}]
+                },
+                {
+                  "label": "warning",
+                  "alertThreshold": 20,
+                  "actions": [{"type": "email", "targetType": "team"}]
+                }
+              ]
+            }'

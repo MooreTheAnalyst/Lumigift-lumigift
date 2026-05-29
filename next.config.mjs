@@ -42,4 +42,11 @@ export default withSentryConfig(nextConfig, {
   org: process.env.SENTRY_ORG,
   project: process.env.SENTRY_PROJECT,
   authToken: process.env.SENTRY_AUTH_TOKEN,
+  // Upload source maps on every production build
+  widenClientFileUpload: true,
+  hideSourceMaps: true,
+  // Automatically instrument Next.js API routes for performance tracing
+  autoInstrumentServerFunctions: true,
+  autoInstrumentMiddleware: true,
+  autoInstrumentAppDirectory: true,
 });
