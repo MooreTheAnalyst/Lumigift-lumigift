@@ -37,6 +37,7 @@
     "contract:bindings": "npm run contract:build && ts-node scripts/generate-bindings.ts",
     "license:check": "license-checker --production --failOn 'GPL;AGPL;LGPL;GPL-2.0;GPL-3.0;AGPL-3.0;LGPL-2.0;LGPL-2.1;LGPL-3.0' --excludePrivatePackages",
     "e2e": "playwright test",
+    "db:migrate": "ts-node scripts/run-migrations.ts",
     "db:seed:test": "ts-node scripts/seed-test-db.ts",
     "test:visual": "playwright test --config=playwright.visual.config.ts",
     "test:visual:update": "playwright test --config=playwright.visual.config.ts --update-snapshots",

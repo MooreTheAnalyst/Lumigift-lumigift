@@ -5,6 +5,10 @@ on:
     branches: [main]
     tags: ["v*"]
 
+permissions:
+  contents: read
+  id-token: write # Required for OIDC connection to AWS
+
 jobs:
   deploy:
     name: Deploy
@@ -13,6 +17,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: lumigift-prod
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
       - uses: actions/setup-node@v6
         with:
           node-version: 20
@@ -20,51 +45,35 @@ jobs:
 
       - run: npm ci
 
-      - name: Build
-        run: npm run build
+      - name: Run database migrations
+        run: npm run db:migrate
         env:
-          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
-          NEXT_PUBLIC_APP_NAME: Lumigift
-          NEXTAUTH_URL: ${{ vars.NEXTAUTH_URL }}
-          NEXTAUTH_SECRET: ${{ secrets.NEXTAUTH_SECRET }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          STELLAR_NETWORK: mainnet
-          STELLAR_HORIZON_URL: https://horizon.stellar.org
-          STELLAR_NETWORK_PASSPHRASE: "Public Global Stellar Network ; September 2015"
-          STELLAR_ESCROW_CONTRACT_ID: ${{ secrets.STELLAR_ESCROW_CONTRACT_ID }}
-          STELLAR_SERVER_SECRET_KEY: ${{ secrets.STELLAR_SERVER_SECRET_KEY }}
-          USDC_ISSUER: ${{ vars.USDC_ISSUER }}
-          USDC_ASSET_CODE: USDC
-          PAYSTACK_SECRET_KEY: ${{ secrets.PAYSTACK_SECRET_KEY }}
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
-          TERMII_API_KEY: ${{ secrets.TERMII_API_KEY }}
-          REDIS_URL: ${{ secrets.REDIS_URL }}
-          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-          NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
-      - name: Upload source maps to Sentry
-        run: npx @sentry/cli@2 releases files "${{ github.sha }}" upload-sourcemaps .next --url-prefix "~/_next" --rewrite
-        env:
-          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        run: |
+          sed -i 's|<AWS_ACCOUNT_ID>|${{ secrets.AWS_ACCOUNT_ID }}|g' taskdef.json
+          sed -i 's|<AWS_REGION>|${{ vars.AWS_REGION }}|g' taskdef.json
 
-      # Swap this step for your hosting provider (Vercel, Railway, Fly.io, etc.)
-      - name: Deploy to Vercel
-        id: deploy
-        uses: amondnet/vercel-action@v42
+      - name: Render Amazon ECS task definition
+        id: render-app-container
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          vercel-args: "--prod"
+          task-definition: taskdef.json
+          container-name: app
+          image: ${{ steps.build-image.outputs.image }}
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+      - name: Deploy to Amazon ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-app-container.outputs.task-definition }}
+          service: lumigift-prod
+          cluster: lumigift-prod
+          codedeploy-appspec: appspec.yaml
+          codedeploy-application: lumigift-prod
+          codedeploy-deployment-group: lumigift-prod
+          wait-for-service-stability: true
 
       - name: Run smoke tests against production
         id: smoke
@@ -72,26 +81,3 @@ jobs:
         env:
           PLAYWRIGHT_BASE_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
           CI: true
-
-      - name: Link Vercel project for rollback
-        if: ${{ failure() && steps.smoke.outcome == 'failure' }}
-        run: npx vercel@latest link --yes --project "$VERCEL_PROJECT_ID" --token "$VERCEL_TOKEN" --scope "$VERCEL_ORG_ID"
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-
-      - name: Roll back production if smoke tests fail
-        if: ${{ failure() && steps.smoke.outcome == 'failure' }}
-        run: npx vercel@latest rollback --token "$VERCEL_TOKEN" --scope "$VERCEL_ORG_ID" --timeout=120s
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-
-      - name: Upload smoke test report on failure
-        if: ${{ failure() && steps.smoke.outcome == 'failure' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: production-smoke-report
-          path: playwright-report/
-          retention-days: 7

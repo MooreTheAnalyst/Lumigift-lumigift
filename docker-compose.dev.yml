@@ -24,18 +24,15 @@ services:
     networks:
       - lumigift-network
 
-  # ─── Redis Cache/Queue ──────────────────────────────────────────────────────
+  # ─── Redis HA Cluster (Sentinel) ────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     command: >
       redis-server
       --appendonly yes
-      --appendfsync everysec
-      --appendfilename appendonly.aof
-      --dir /data
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
     volumes:
       - redis-data:/data
     healthcheck:
@@ -43,6 +40,73 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - lumigift-network
+
+  redis-replica:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --replicaof redis 6379
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    depends_on:
+      - redis
+    networks:
+      - lumigift-network
+
+  redis-sentinel-1:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-sentinel
+      --sentinel monitor mymaster redis 6379 2
+      --sentinel down-after-milliseconds mymaster 5000
+      --sentinel failover-timeout mymaster 60000
+      --sentinel parallel-syncs mymaster 1
+    depends_on:
+      - redis
+    networks:
+      - lumigift-network
+
+  redis-sentinel-2:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-sentinel
+      --sentinel monitor mymaster redis 6379 2
+      --sentinel down-after-milliseconds mymaster 5000
+      --sentinel failover-timeout mymaster 60000
+      --sentinel parallel-syncs mymaster 1
+    depends_on:
+      - redis
+    networks:
+      - lumigift-network
+
+  redis-sentinel-3:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-sentinel
+      --sentinel monitor mymaster redis 6379 2
+      --sentinel down-after-milliseconds mymaster 5000
+      --sentinel failover-timeout mymaster 60000
+      --sentinel parallel-syncs mymaster 1
+    depends_on:
+      - redis
+    networks:
+      - lumigift-network
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    restart: unless-stopped
+    environment:
+      - REDIS_ADDR=redis:6379
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis
     networks:
       - lumigift-network
 
@@ -74,8 +138,11 @@ services:
       - DB_IDLE_TIMEOUT_MS=${DB_IDLE_TIMEOUT_MS:-10000}
       - DB_CONNECTION_TIMEOUT_MS=${DB_CONNECTION_TIMEOUT_MS:-5000}
       
-      # Redis (connects to redis service)
+      # Redis (connects via Sentinel)
       - REDIS_URL=redis://redis:6379
+      - REDIS_USE_SENTINEL=true
+      - REDIS_SENTINEL_HOSTS=redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
+      - REDIS_SENTINEL_NAME=mymaster
       
       # Stellar / Soroban
       - STELLAR_NETWORK=${STELLAR_NETWORK:-testnet}
@@ -127,6 +194,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redis-sentinel-1:
+        condition: service_started
+      redis-sentinel-2:
+        condition: service_started
+      redis-sentinel-3:
+        condition: service_started
     networks:
       - lumigift-network
 

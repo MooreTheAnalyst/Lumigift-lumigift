@@ -36,6 +36,11 @@ export const serverConfig = {
   },
   redis: {
     url: env.REDIS_URL,
+    useSentinel: env.REDIS_USE_SENTINEL,
+    sentinelHosts: env.REDIS_SENTINEL_HOSTS,
+    sentinelName: env.REDIS_SENTINEL_NAME,
+    sentinelPassword: env.REDIS_SENTINEL_PASSWORD,
+    password: env.REDIS_PASSWORD,
   },
   database: {
     url: env.DATABASE_URL,

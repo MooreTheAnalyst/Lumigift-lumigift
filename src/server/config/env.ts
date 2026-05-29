@@ -53,6 +53,11 @@ const envSchema = z.object({
 
   // Redis
   REDIS_URL: z.string().min(1),
+  REDIS_USE_SENTINEL: z.preprocess((val) => val === "true" || val === "1", z.boolean()).default(false),
+  REDIS_SENTINEL_HOSTS: z.string().optional(), // Format: host1:port1,host2:port2
+  REDIS_SENTINEL_NAME: z.string().default("mymaster"),
+  REDIS_SENTINEL_PASSWORD: z.string().optional(),
+  REDIS_PASSWORD: z.string().optional(),
 
   // Gift Limits
   GIFT_MIN_AMOUNT_NGN: z.coerce.number().int().positive().default(500),

@@ -1,7 +1,7 @@
-import { createClient } from "redis";
+import { createClient, createSentinel } from "redis";
 import { serverConfig } from "@/server/config";
 
-let client: ReturnType<typeof createClient> | null = null;
+let client: any = null;
 
 /**
  * Returns a connected Redis client, creating and connecting one on first call.
@@ -12,8 +12,38 @@ let client: ReturnType<typeof createClient> | null = null;
  */
 export async function getRedisClient() {
   if (!client) {
-    client = createClient({ url: serverConfig.redis.url });
-    client.on("error", (err: Error) => console.error("[Redis]", err));
+    const { redis: config } = serverConfig;
+
+    if (config.useSentinel) {
+      if (!config.sentinelHosts) {
+        throw new Error("REDIS_SENTINEL_HOSTS is required when REDIS_USE_SENTINEL is true");
+      }
+
+      const sentinels = config.sentinelHosts.split(",").map((hostPort) => {
+        const [host, port] = hostPort.split(":");
+        return {
+          host: host.trim(),
+          port: parseInt(port?.trim(), 10) || 26379,
+        };
+      });
+
+      client = createSentinel({
+        name: config.sentinelName,
+        sentinelRootNodes: sentinels,
+        sentinelClientOptions: config.sentinelPassword
+          ? { password: config.sentinelPassword }
+          : undefined,
+        nodeClientOptions: config.password ? { password: config.password } : undefined,
+      });
+    } else {
+      client = createClient({ url: config.url });
+    }
+
+    client.on("error", (err: Error) => console.error("[Redis Error]", err));
+    client.on("connect", () => console.log("[Redis] Connecting..."));
+    client.on("ready", () => console.log("[Redis] Client ready"));
+    client.on("reconnecting", () => console.log("[Redis] Reconnecting..."));
+
     await client.connect();
   }
   return client;

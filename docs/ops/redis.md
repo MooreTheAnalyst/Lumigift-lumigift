@@ -2,22 +2,72 @@
 
 ## Configuration
 
+Redis is configured in a **High Availability (HA) Sentinel Cluster** to eliminate single points of failure.
+
+### Persistence
+
 Redis is configured with **AOF (Append Only File)** persistence to prevent job queue data loss on restart.
 
 | Setting | Value | Reason |
 |---------|-------|--------|
 | `appendonly` | `yes` | Enables AOF persistence |
-| `appendfsync` | `everysec` | Flushes to disk every second — balances durability and performance |
-| `appendfilename` | `appendonly.aof` | AOF file name |
+| `maxmemory` | `256mb` | Prevents Redis from consuming all system memory |
+| `maxmemory-policy` | `allkeys-lru` | Automatically evicts least recently used keys when memory limit is reached |
 | `dir` | `/data` | Persistent volume mount point |
+
+### HA Setup (Sentinel)
+
+The cluster consists of:
+- **1 Master node** (`redis`)
+- **1 Replica node** (`redis-replica`)
+- **3 Sentinel nodes** (`redis-sentinel-1`, `redis-sentinel-2`, `redis-sentinel-3`)
+
+Sentinels monitor the master and automatically promote the replica if the master fails.
 
 ## Running locally
 
 ```bash
-docker compose up -d redis
+# Start the HA cluster
+docker compose up -d redis redis-replica redis-sentinel-1 redis-sentinel-2 redis-sentinel-3
 ```
 
-Redis will be available at `redis://localhost:6379`.
+The application connects to the Sentinels to discover the current master.
+
+## Monitoring
+
+Redis metrics are exposed via `redis-exporter` at `http://localhost:9121/metrics`.
+
+## Testing Failover
+
+To verify automatic failover:
+
+1. **Check current master:**
+   ```bash
+   docker compose exec redis-sentinel-1 redis-cli -p 26379 sentinel get-master-addr-by-name mymaster
+   ```
+
+2. **Pause the master node:**
+   ```bash
+   docker compose pause redis
+   ```
+
+3. **Monitor sentinel logs:**
+   ```bash
+   docker compose logs -f redis-sentinel-1
+   ```
+   You should see `+sdown`, `+odown`, and eventually `+switch-master`.
+
+4. **Verify new master:**
+   ```bash
+   docker compose exec redis-sentinel-1 redis-cli -p 26379 sentinel get-master-addr-by-name mymaster
+   ```
+   It should now point to the IP of the replica.
+
+5. **Unpause the old master:**
+   ```bash
+   docker compose unpause redis
+   ```
+   The old master will rejoin the cluster as a replica of the new master.
 
 ## Recovery procedure
 
