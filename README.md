@@ -23,6 +23,8 @@ Lumigift is a full-stack gifting platform that enables users to send cash gifts 
 
 ## Architecture
 
+[View Architecture Decision Records (ADRs)](docs/adr/README.md)
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        Next.js App                          │
