@@ -230,6 +230,7 @@ PostgreSQL rules `audit_logs_no_update` and `audit_logs_no_delete` silently disc
 | `0003_hash_recipient_phone.sql` | Adds `recipient_phone_hash` to `gifts`, drops plaintext `recipient_phone` |
 | `0004_gift_invitations.sql` | Creates `gift_invitations` with FK and indexes |
 | `0005_audit_logs.sql` | Creates `audit_logs` with append-only rules |
+| `0006_fraud_detection.sql` | Creates `fraud_flags` for manual review of suspicious gifts |
 
 ---
 

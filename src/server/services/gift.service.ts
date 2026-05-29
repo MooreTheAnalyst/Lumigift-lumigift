@@ -11,6 +11,7 @@ import { sendGiftInvitation } from "@/lib/sms";
 import { sendGiftReceivedEmail } from "@/lib/email";
 import { stripHtmlTags } from "@/lib/sanitize";
 import { createAuditLog } from "./audit.service";
+import { checkGiftForFraud, createFraudFlag } from "./fraud.service";
 
 // ─── Exchange rate helper ─────────────────────────────────────────────────────
 import { getExchangeRate, lockExchangeRate } from "@/server/services/exchange-rate.service";
@@ -53,7 +54,8 @@ export const gifts = new Map<string, Gift>();
 export async function createGift(
   senderId: string,
   input: CreateGiftInput,
-  recipientIsRegistered: boolean = true
+  recipientIsRegistered: boolean = true,
+  senderCreatedAt?: Date
 ): Promise<{ gift: Gift; paymentUrl: string }> {
   // ── Daily sending limit check ──────────────────────────────────────────────
   const { dailyLimitNgn } = serverConfig.giftLimits;
@@ -90,6 +92,37 @@ export async function createGift(
   };
 
   gifts.set(id, gift);
+
+  // ── Fraud detection check ──────────────────────────────────────────────────
+  const userCreatedAt = senderCreatedAt ?? new Date(0); // fallback: treat as old account
+  const fraudCheck = await checkGiftForFraud(
+    senderId,
+    input.recipientPhone,
+    input.amountNgn,
+    userCreatedAt
+  );
+
+  if (fraudCheck.flagged) {
+    // Flag the gift for review — do NOT auto-process
+    for (const reason of fraudCheck.reasons) {
+      await createFraudFlag(
+        id,
+        senderId,
+        "automated_rule",
+        reason,
+        fraudCheck.severity,
+        {
+          amountNgn: input.amountNgn,
+          recipientName: input.recipientName,
+          rules: fraudCheck.reasons,
+        }
+      );
+    }
+
+    // Update gift status to indicate it's under review
+    gift.status = "pending_payment"; // held — not auto-processed
+    gifts.set(id, gift);
+  }
 
   // Lock the exchange rate for slippage protection (expires in 5 minutes)
   await lockExchangeRate(id);
