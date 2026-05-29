@@ -89,6 +89,10 @@ const MIN_TTL_THRESHOLD: u32 = 120_960; // 7 * 24 * 3600 / 5
 /// reconciliation after the funds have been transferred.
 const POST_CLAIM_TTL_LEDGERS: u32 = 120_960;
 
+/// Current storage schema version. When a breaking storage layout change is
+/// introduced, add a migration path from the prior version to this version.
+const STORAGE_SCHEMA_VERSION: u32 = 1;
+
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 //
 // All keys use `instance` storage, which is tied to the contract instance
@@ -130,6 +134,10 @@ pub enum DataKey {
     Cancelled,
     Expired,
     GiftId,
+    /// Version marker for storage layout migrations.
+    SchemaVersion,
+    /// Flag to temporarily pause new gift creation.
+    Paused,
 }
 
 /// Keys stored in **temporary** storage (short-lived, lower ledger cost).
@@ -215,6 +223,7 @@ impl EscrowContract {
         env.storage().instance().set(&DataKey::Claimed, &false);
         env.storage().instance().set(&DataKey::Cancelled, &false);
         env.storage().instance().set(&DataKey::Expired, &false);
+        env.storage().instance().set(&DataKey::SchemaVersion, &STORAGE_SCHEMA_VERSION);
 
         // Extend instance TTL to cover the full lock period plus a 30-day buffer.
         // This prevents state archival before the recipient can claim.
@@ -246,7 +255,7 @@ impl EscrowContract {
         let claimed: bool = env
             .storage()
             .persistent()
-            .get(&PersistentKey::Claimed)
+            .get(&DataKey::Claimed)
             .unwrap_or(false);
 
         if claimed {
@@ -291,7 +300,7 @@ impl EscrowContract {
             .ok_or(EscrowError::NotInitialized)?;
 
         // Effects before interactions (reentrancy guard)
-        env.storage().persistent().set(&PersistentKey::Claimed, &true);
+        env.storage().persistent().set(&DataKey::Claimed, &true);
 
         // Extend TTL so the claimed state stays readable for reconciliation.
         // unlock_time is in the past here, so required_ttl_ledgers returns BUFFER_LEDGERS.
@@ -511,10 +520,47 @@ impl EscrowContract {
         let claimed: bool = env
             .storage()
             .persistent()
-            .get(&PersistentKey::Claimed)
+            .get(&DataKey::Claimed)
             .unwrap_or(false);
 
         Ok((recipient, amount, unlock_time, claimed))
+    }
+
+    /// Migrate on-chain storage when upgrading to a new contract layout.
+    ///
+    /// If `initialize` already wrote `SchemaVersion` then the contract state is
+    /// already up-to-date and this call is a no-op.
+    pub fn migrate(env: Env) -> Result<(), EscrowError> {
+        let current_version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(0);
+
+        if current_version >= STORAGE_SCHEMA_VERSION {
+            return Ok(());
+        }
+
+        // Migration path from v0 -> v1. This can be extended for future layouts.
+        if current_version == 0 {
+            let paused: bool = env
+                .storage()
+                .instance()
+                .get(&DataKey::Paused)
+                .unwrap_or(false);
+            env.storage().instance().set(&DataKey::Paused, &paused);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersion, &STORAGE_SCHEMA_VERSION);
+
+        env.events().publish(
+            (Symbol::new(&env, "migrated"),),
+            (current_version, STORAGE_SCHEMA_VERSION, env.ledger().timestamp()),
+        );
+
+        Ok(())
     }
 
     /// Upgrade the contract WASM. Restricted to the admin address stored at initialization.
@@ -539,15 +585,6 @@ impl EscrowContract {
         );
 
         Ok(())
-    }
-
-    /// Set the admin address. Can only be called once (before any admin is set).
-    pub fn set_admin(env: Env, admin: Address) {
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic!("admin already set");
-        }
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
     /// Pause new gift creation. Restricted to admin.

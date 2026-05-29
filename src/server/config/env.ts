@@ -1,4 +1,9 @@
 import { z } from "zod";
+import { loadSecretManagerEnv } from "./secrets.ts";
+
+if (process.env.NODE_ENV === "production" && process.env.NEXT_PHASE !== "phase-production-build") {
+  await loadSecretManagerEnv();
+}
 
 const envSchema = z.object({
   // App
