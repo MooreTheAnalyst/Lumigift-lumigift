@@ -21,6 +21,21 @@ topic:  ("upgraded",)
 data:   (old_wasm_hash, new_wasm_hash, timestamp)
 ```
 
+### Migration helper
+
+The contract now exposes a `migrate()` entrypoint for upgrade paths that
+introduce breaking storage layout changes. After calling `upgrade()` on the
+contract, run `migrate()` to initialize new storage keys and mark the current
+storage schema version.
+
+```bash
+stellar contract invoke \
+  --network testnet \
+  --source <ADMIN_SECRET_KEY> \
+  --id <CONTRACT_ID> \
+  -- migrate
+```
+
 ### Changing the Admin
 
 The admin address can be changed using the `set_admin(new_admin: Address)`

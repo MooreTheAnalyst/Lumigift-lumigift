@@ -11,6 +11,7 @@ This runbook provides procedures for handling common production incidents in Lum
   - P2 (Medium): <4 hours
 - **Communication**: Update stakeholders via Slack #incidents channel
 - **Post-Mortem**: Conduct blameless post-mortem for all P0/P1 incidents
+- **Secrets posture**: Production secrets must be loaded from a secrets manager, not from `.env` files, to reduce exposure and speed rotation
 
 ## Database Connection Failure
 
@@ -29,18 +30,22 @@ This runbook provides procedures for handling common production incidents in Lum
 
 ### Resolution Steps
 1. **Connection Pool Exhaustion**:
-   - Restart affected Vercel functions
-   - Increase pool size if pattern persists (update `DATABASE_URL` with `?pool_size=20`)
+   - Step 1: Confirm active connections and idle transactions
+   - Step 2: Restart affected Vercel functions or processes
+   - Step 3: If the issue repeats, increase pool size and improve query timing
+   - Step 4: Monitor until error rate returns to normal
 
 2. **Database Instance Down**:
-   - Restart database instance via cloud provider console
-   - If restart fails, restore from latest backup
-   - Update DNS/connection strings if instance migrated
+   - Step 1: Restart the instance in the cloud provider console
+   - Step 2: Confirm connectivity with `psql -h $DB_HOST -U $DB_USER -d $DB_NAME -c "SELECT 1"`
+   - Step 3: If restart fails, restore from the latest backup and update DNS if needed
+   - Step 4: Reconnect the app, verify writes, and clear stale circuit breakers
 
 3. **Network Issues**:
-   - Check VPC security groups allow connections from Vercel
-   - Verify SSL certificates are valid
-   - Test from different regions
+   - Step 1: Confirm security group or firewall rules for the database
+   - Step 2: Validate TLS certificates and connection endpoints
+   - Step 3: Test connectivity from a different region or bastion host
+   - Step 4: If the network is unstable, switch to an alternative database endpoint if available
 
 ### Escalation Path
 - If database unrecoverable: Escalate to engineering lead for data restoration
@@ -97,17 +102,20 @@ This runbook provides procedures for handling common production incidents in Lum
 
 ### Resolution Steps
 1. **Temporary Network Issues**:
-   - Implement exponential backoff retry logic
-   - Switch to backup RPC endpoints if available
-   - Queue failed transactions for later retry
+   - Step 1: Check Stellar status page and RPC health endpoints
+   - Step 2: Pause new contract operations if user impact is high
+   - Step 3: Implement exponential backoff and retry failed requests
+   - Step 4: Queue failed transactions for later retry once the network recovers
 
 2. **RPC Node Issues**:
-   - Update RPC URLs to healthy nodes
-   - Implement RPC failover in application config
+   - Step 1: Swap to a healthy alternate RPC endpoint
+   - Step 2: Update the app config and restart any long-lived workers
+   - Step 3: Validate new RPC connectivity with `getHealth` and `getLatestLedger`
 
 3. **Horizon API Issues**:
-   - Use alternative Horizon instances
-   - Implement caching for frequently accessed data
+   - Step 1: Switch to an alternate Horizon instance
+   - Step 2: Enable caching for contract metadata and account lookups
+   - Step 3: Monitor for recurring failures and escalate if the provider remains degraded
 
 ### Escalation Path
 - If network-wide outage: Monitor Stellar status page, no immediate action
@@ -130,16 +138,19 @@ This runbook provides procedures for handling common production incidents in Lum
 
 ### Resolution Steps
 1. **Webhook URL Mismatch**:
-   - Update webhook URL in Paystack dashboard
-   - Resend failed webhooks via Paystack dashboard
+   - Step 1: Confirm the webhook URL configured in Paystack matches the production endpoint
+   - Step 2: Update the URL if needed
+   - Step 3: Resend failed webhooks from Paystack and verify delivery
 
 2. **Signature Validation Issues**:
-   - Verify `PAYSTACK_SECRET_KEY` environment variable
-   - Check webhook payload parsing logic
+   - Step 1: Confirm `PAYSTACK_SECRET_KEY` is set in the production secrets manager
+   - Step 2: Verify the app is using the correct secret during signature validation
+   - Step 3: Replay webhook deliveries after fixing the configuration
 
 3. **Processing Failures**:
-   - Clear Redis queue and reprocess webhooks
-   - Manually update affected gift statuses from Paystack dashboard data
+   - Step 1: Inspect the Redis queue and application logs for webhook processing errors
+   - Step 2: Clear or replay stuck jobs safely
+   - Step 3: Reconcile payment status manually against Paystack if necessary
 
 ### Escalation Path
 - If Paystack API issues: Contact Paystack support
