@@ -40,6 +40,8 @@
     "db:seed:test": "ts-node scripts/seed-test-db.ts",
     "test:visual": "playwright test --config=playwright.visual.config.ts",
     "test:visual:update": "playwright test --config=playwright.visual.config.ts --update-snapshots",
+    "storybook": "storybook dev -p 6006",
+    "storybook:build": "storybook build",
     "docker:up": "docker-compose up",
     "docker:up:dev": "docker-compose -f docker-compose.dev.yml up",
     "docker:down": "docker-compose down",
@@ -96,7 +98,13 @@
     "react-dom": "^19.2.6",
     "ts-node": "^10.9.2",
     "typedoc": "^0.28.19",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "@storybook/addon-a11y": "^8.6.12",
+    "@storybook/addon-essentials": "^8.6.12",
+    "@storybook/nextjs": "^8.6.12",
+    "@storybook/react": "^8.6.12",
+    "chromatic": "^11.28.1",
+    "storybook": "^8.6.12"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
