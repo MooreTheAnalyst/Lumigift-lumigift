@@ -20,6 +20,12 @@ const customConfig = {
   testEnvironmentOptions: {},
   // Per-file environment overrides via docblock: @jest-environment node
   collectCoverageFrom: ["src/**/*.{ts,tsx}", "!src/**/*.d.ts"],
+  coverageThreshold: {
+    global: {
+      lines: 80,
+      branches: 75,
+    },
+  },
 };
 
 module.exports = createJestConfig(customConfig);
