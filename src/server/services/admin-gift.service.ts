@@ -49,9 +49,9 @@ export interface AdminGiftPage {
 export function adminListGifts(query: AdminGiftQuery): AdminGiftPage {
   const limit = Math.min(query.limit ?? 20, 100);
 
-  let all = [...gifts.values()].sort(
-    (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-  );
+  let all = [...gifts.values()]
+    .filter((g) => !g.deletedAt)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   if (query.status) {
     all = all.filter((g) => g.status === query.status);
@@ -75,4 +75,11 @@ export function adminListGifts(query: AdminGiftQuery): AdminGiftPage {
 
 export function adminGetGift(id: string): Gift | null {
   return gifts.get(id) ?? null;
+}
+
+/** Returns all soft-deleted gifts for admin review. */
+export function adminListDeletedGifts(): Gift[] {
+  return [...gifts.values()]
+    .filter((g) => g.deletedAt != null)
+    .sort((a, b) => b.deletedAt!.getTime() - a.deletedAt!.getTime());
 }

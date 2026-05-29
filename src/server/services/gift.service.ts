@@ -161,7 +161,9 @@ export async function createGift(
  * @returns The {@link Gift} if found, or `null` if it does not exist.
  */
 export async function getGiftById(id: string): Promise<Gift | null> {
-  return gifts.get(id) ?? null;
+  const gift = gifts.get(id);
+  if (!gift || gift.deletedAt) return null;
+  return gift;
 }
 
 /**
@@ -215,7 +217,7 @@ export async function updateGiftStatus(id: string, status: GiftStatus): Promise<
  * @returns An array of {@link Gift} objects, possibly empty.
  */
 export async function getGiftsBySender(senderId: string): Promise<Gift[]> {
-  return [...gifts.values()].filter((g) => g.senderId === senderId);
+  return [...gifts.values()].filter((g) => g.senderId === senderId && !g.deletedAt);
 }
 
 /** Paginated result for {@link getGiftsBySenderPaginated}. */
@@ -256,7 +258,7 @@ export async function getGiftsBySenderPaginated(
   limit: number
 ): Promise<GiftPage> {
   const all = [...gifts.values()]
-    .filter((g) => g.senderId === senderId)
+    .filter((g) => g.senderId === senderId && !g.deletedAt)
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   const startIndex = cursor ? all.findIndex((g) => g.id === cursor) + 1 : 0;
@@ -284,7 +286,7 @@ export async function getGiftsBySenderPage(
 ): Promise<GiftPageOffset> {
   const safePage = Math.max(1, page);
   const safeLimit = Math.min(100, Math.max(1, limit));
-  const allGifts = [...gifts.values()].filter((g) => g.senderId === senderId);
+  const allGifts = [...gifts.values()].filter((g) => g.senderId === senderId && !g.deletedAt);
 
   const counts = {
     all: allGifts.length,
@@ -323,7 +325,7 @@ export async function getGiftsBySenderPage(
  */
 export async function getGiftsByRecipient(phone: string): Promise<Gift[]> {
   const hash = hashPhone(phone);
-  return [...gifts.values()].filter((g) => g.recipientPhoneHash === hash);
+  return [...gifts.values()].filter((g) => g.recipientPhoneHash === hash && !g.deletedAt);
 }
 
 /**
@@ -400,9 +402,40 @@ export async function updateGiftStatusIdempotent(
 }
 
 export async function getGiftsByStatus(status: GiftStatus): Promise<Gift[]> {
-  return [...gifts.values()].filter((g) => g.status === status);
+  return [...gifts.values()].filter((g) => g.status === status && !g.deletedAt);
 }
 
 export async function getAllGifts(): Promise<Gift[]> {
-  return [...gifts.values()];
+  return [...gifts.values()].filter((g) => !g.deletedAt);
+}
+
+/**
+ * Soft-deletes a gift by setting its `deletedAt` timestamp.
+ * The record is preserved for audit purposes and can be restored.
+ *
+ * @param id - The gift UUID.
+ * @returns The updated {@link Gift}, or `null` if not found.
+ */
+export async function softDeleteGift(id: string): Promise<Gift | null> {
+  const gift = gifts.get(id);
+  if (!gift) return null;
+  gift.deletedAt = new Date();
+  gift.updatedAt = new Date();
+  gifts.set(id, gift);
+  return gift;
+}
+
+/**
+ * Restores a soft-deleted gift by clearing its `deletedAt` timestamp.
+ *
+ * @param id - The gift UUID.
+ * @returns The restored {@link Gift}, or `null` if not found.
+ */
+export async function restoreGift(id: string): Promise<Gift | null> {
+  const gift = gifts.get(id);
+  if (!gift) return null;
+  gift.deletedAt = null;
+  gift.updatedAt = new Date();
+  gifts.set(id, gift);
+  return gift;
 }
