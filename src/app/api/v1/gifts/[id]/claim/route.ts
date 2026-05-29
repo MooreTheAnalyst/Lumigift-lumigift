@@ -49,10 +49,10 @@ export const POST = withErrorHandler(withCsrf(async (req: NextRequest) => {
     }
   }
 
-  const { txHash } = await claimGift(gift, validation.data.recipientStellarKey);
+  const { jobId } = await claimGift(gift, validation.data.recipientStellarKey);
 
-  return NextResponse.json<ApiResponse<{ txHash: string }>>({
+  return NextResponse.json<ApiResponse<{ jobId: string }>>({
     success: true,
-    data: { txHash },
+    data: { jobId },
   });
 }));

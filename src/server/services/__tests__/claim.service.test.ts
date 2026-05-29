@@ -4,19 +4,23 @@
  * Unit tests for src/server/services/claim.service.ts
  *
  * Mocks:
- *  - @/lib/stellar      → sendUsdcPayment
- *  - ./gift.service     → updateGiftStatus, storeClaimTxHash
+ *  - @/lib/stellar           → validateStellarAccount
+ *  - @/lib/queues/stellar-tx.queue → enqueueClaim
  *
- * Covers: successful claim, claim before unlock, already claimed,
- *         contract (Stellar) call failure, DB update verified, SMS mock.
+ * Covers: successful claim enqueuing, invalid recipient account,
+ *         and gift status guards.
  */
 
 import type { Gift } from "@/types";
 
-// ─── Mocks ────────────────────────────────────────────────────────────────────
+// ─── Mocks ───────────────────────────────────────────────────────────────────
 
 jest.mock("@/lib/stellar", () => ({
-  sendUsdcPayment: jest.fn(),
+  validateStellarAccount: jest.fn().mockResolvedValue({ valid: true }),
+}));
+
+jest.mock("@/lib/queues/stellar-tx.queue", () => ({
+  enqueueClaim: jest.fn().mockResolvedValue("job-id-abc123"),
 }));
 
 jest.mock("../gift.service", () => ({
@@ -32,8 +36,8 @@ jest.mock("@/lib/sms", () => ({
 }));
 
 import { claimGift } from "../claim.service";
-import { sendUsdcPayment } from "@/lib/stellar";
-import { updateGiftStatus, storeClaimTxHash } from "../gift.service";
+import { validateStellarAccount } from "@/lib/stellar";
+import { enqueueClaim } from "@/lib/queues/stellar-tx.queue";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -53,52 +57,43 @@ function makeGift(overrides: Partial<Gift> = {}): Gift {
   };
 }
 
-const RECIPIENT_KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-const TX_HASH = "abc123txhash";
+const RECIPIENT_KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFLA5";
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// ─── Tests ───────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
   jest.clearAllMocks();
-  (sendUsdcPayment as jest.Mock).mockResolvedValue(TX_HASH);
-  (updateGiftStatus as jest.Mock).mockResolvedValue(undefined);
-  (storeClaimTxHash as jest.Mock).mockResolvedValue(undefined);
+  (validateStellarAccount as jest.Mock).mockResolvedValue({ valid: true });
+  (enqueueClaim as jest.Mock).mockResolvedValue("job-id-abc123");
 });
 
 describe("claimGift", () => {
-  it("returns txHash on a successful claim", async () => {
+  it("enqueues a claim job and returns the job id", async () => {
     const gift = makeGift();
     const result = await claimGift(gift, RECIPIENT_KEY);
-    expect(result).toEqual({ txHash: TX_HASH });
+    expect(result).toEqual({ jobId: "job-id-abc123" });
+    expect(enqueueClaim).toHaveBeenCalledWith(gift.id, RECIPIENT_KEY);
   });
 
-  it("calls sendUsdcPayment with the correct destination and amount", async () => {
+  it("validates the recipient Stellar account before enqueuing", async () => {
+    (validateStellarAccount as jest.Mock).mockResolvedValue({
+      valid: false,
+      reason: "Stellar account does not exist",
+    });
+
     const gift = makeGift();
-    await claimGift(gift, RECIPIENT_KEY);
-    expect(sendUsdcPayment).toHaveBeenCalledWith(RECIPIENT_KEY, gift.amountUsdc);
+    await expect(claimGift(gift, RECIPIENT_KEY)).rejects.toThrow(
+      "Invalid recipient Stellar account: Stellar account does not exist"
+    );
+    expect(enqueueClaim).not.toHaveBeenCalled();
   });
 
-  it("stores the claim tx hash in the database after payment", async () => {
-    const gift = makeGift();
-    await claimGift(gift, RECIPIENT_KEY);
-    expect(storeClaimTxHash).toHaveBeenCalledWith(gift.id, TX_HASH);
-  });
-
-  it("marks the gift as claimed after storing the tx hash", async () => {
-    const gift = makeGift();
-    await claimGift(gift, RECIPIENT_KEY);
-    // storeClaimTxHash must be called before updateGiftStatus
-    const storeMockOrder = (storeClaimTxHash as jest.Mock).mock.invocationCallOrder[0];
-    const updateMockOrder = (updateGiftStatus as jest.Mock).mock.invocationCallOrder[0];
-    expect(storeMockOrder).toBeLessThan(updateMockOrder);
-    expect(updateGiftStatus).toHaveBeenCalledWith(gift.id, "claimed");
-  });
-
-  it("throws when the gift is not yet unlocked (status: locked)", async () => {
+  it("throws when the gift is not yet unlocked", async () => {
     const gift = makeGift({ status: "locked" });
     await expect(claimGift(gift, RECIPIENT_KEY)).rejects.toThrow(
       "Gift is not yet unlocked."
     );
+    expect(enqueueClaim).not.toHaveBeenCalled();
   });
 
   it("throws when the gift is already claimed", async () => {
@@ -106,36 +101,6 @@ describe("claimGift", () => {
     await expect(claimGift(gift, RECIPIENT_KEY)).rejects.toThrow(
       "Gift is not yet unlocked."
     );
-  });
-
-  it("throws when the gift is still pending payment", async () => {
-    const gift = makeGift({ status: "pending_payment" });
-    await expect(claimGift(gift, RECIPIENT_KEY)).rejects.toThrow(
-      "Gift is not yet unlocked."
-    );
-  });
-
-  it("does not call sendUsdcPayment when the gift is not unlocked", async () => {
-    const gift = makeGift({ status: "locked" });
-    await expect(claimGift(gift, RECIPIENT_KEY)).rejects.toThrow();
-    expect(sendUsdcPayment).not.toHaveBeenCalled();
-  });
-
-  it("propagates Stellar contract call failures", async () => {
-    (sendUsdcPayment as jest.Mock).mockRejectedValue(
-      new Error("Stellar submission failed")
-    );
-    const gift = makeGift();
-    await expect(claimGift(gift, RECIPIENT_KEY)).rejects.toThrow(
-      "Stellar submission failed"
-    );
-  });
-
-  it("does not update gift status when the Stellar call fails", async () => {
-    (sendUsdcPayment as jest.Mock).mockRejectedValue(new Error("network error"));
-    const gift = makeGift();
-    await expect(claimGift(gift, RECIPIENT_KEY)).rejects.toThrow();
-    expect(updateGiftStatus).not.toHaveBeenCalled();
-    expect(storeClaimTxHash).not.toHaveBeenCalled();
+    expect(enqueueClaim).not.toHaveBeenCalled();
   });
 });

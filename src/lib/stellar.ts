@@ -132,6 +132,39 @@ export async function sendUsdcPayment(
 }
 
 /**
+ * Validates that a Stellar public key is well-formed AND corresponds to a
+ * funded account on the network (i.e. it has been activated with a minimum
+ * XLM balance). Call this before locking funds in the escrow contract to
+ * prevent gifts being sent to non-existent accounts.
+ *
+ * @param publicKey - The Stellar public key (G…) to validate.
+ * @returns `{ valid: true }` if the account exists and is funded, or
+ *   `{ valid: false, reason: string }` describing why it failed.
+ */
+export async function validateStellarAccount(
+  publicKey: string
+): Promise<{ valid: true } | { valid: false; reason: string }> {
+  // 1. Structural check — normalized Stellar public keys must be valid.
+  try {
+    Keypair.fromPublicKey(publicKey);
+  } catch {
+    return { valid: false, reason: "Invalid Stellar public key format" };
+  }
+
+  try {
+    await server.loadAccount(publicKey);
+    return { valid: true };
+  } catch (err: unknown) {
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    if (status === 404) {
+      return { valid: false, reason: "Stellar account does not exist or is not funded" };
+    }
+    // Network error — propagate so callers can retry
+    throw err;
+  }
+}
+
+/**
  * Establishes a USDC trustline for the account identified by `secretKey`.
  * Must be called before the account can hold or receive USDC.
  *

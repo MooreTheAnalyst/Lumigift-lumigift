@@ -47,6 +47,7 @@
     "docker:down": "docker-compose down",
     "docker:build": "docker-compose build",
     "docker:logs": "docker-compose logs -f",
+    "worker:stellar": "ts-node src/server/queue-worker.ts",
     "prepare": "husky"
   },
   "dependencies": {
@@ -55,6 +56,7 @@
     "@stellar/stellar-sdk": "^15.1.0",
     "@tanstack/react-query": "^5.100.14",
     "axios": "^1.16.1",
+    "bullmq": "^5.56.0",
     "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
     "date-fns": "^4.3.0",
