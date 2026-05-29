@@ -86,6 +86,13 @@ export function GiftCard({ gift, perspective, recipientStellarKey }: GiftCardPro
         <p className={styles.message}>{gift.message}</p>
       )}
 
+      {gift.voiceNoteUrl && !isLocked && (
+        <div className={styles.voiceNote}>
+          <span className={styles.voiceNoteLabel}>Voice note</span>
+          <audio src={gift.voiceNoteUrl} controls className={styles.voiceNotePlayer} aria-label="Gift voice note" />
+        </div>
+      )}
+
       {gift.stellarTxHash && (
         <div className={styles.meta}>
           <span>Funding tx: </span>

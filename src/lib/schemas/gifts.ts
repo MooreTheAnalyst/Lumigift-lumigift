@@ -76,7 +76,8 @@ export const createGiftSchema = z.object({
     .number()
     .min(GIFT_MIN, `Minimum gift amount is ${formatNGN(GIFT_MIN)}`)
     .max(GIFT_MAX, `Maximum gift amount is ${formatNGN(GIFT_MAX)}`),
-  message: z.string().max(500, "Message cannot exceed 500 characters").optional(),
+  message: z.string().max(280, "Message cannot exceed 280 characters").optional(),
+  voiceNoteUrl: z.string().url("voiceNoteUrl must be a valid URL").optional(),
   unlockAt: z
     .string()
     .datetime({ message: "unlockAt must be a valid ISO 8601 datetime" })

@@ -31,6 +31,7 @@ export interface Gift {
   amountNgn: number;
   amountUsdc: string; // on-chain amount as string to preserve precision
   message?: string;
+  voiceNoteUrl?: string;
   mediaUrl?: string;
   unlockAt: Date;
   status: GiftStatus;

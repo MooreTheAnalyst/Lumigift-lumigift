@@ -82,6 +82,7 @@ export async function createGift(
     amountNgn: input.amountNgn,
     amountUsdc,
     message: sanitizedMessage,
+    voiceNoteUrl: input.voiceNoteUrl,
     unlockAt: new Date(input.unlockAt),
     status: "pending_payment",
     createdAt: new Date(),

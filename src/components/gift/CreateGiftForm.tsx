@@ -10,10 +10,14 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { DateTimePicker } from "@/components/ui/DateTimePicker";
 import { GiftPreview } from "./GiftPreview";
-import { useState } from "react";
+import { VoiceNoteRecorder } from "./VoiceNoteRecorder";
+import { useState, useCallback } from "react";
 import { useCsrf } from "@/hooks/useCsrf";
 import { formatNGN } from "@/lib/currency";
 import styles from "./CreateGiftForm.module.css";
+
+const MESSAGE_MAX = 280;
+const MESSAGE_WARN_THRESHOLD = 20;
 
 type Step = "form" | "preview";
 
@@ -24,6 +28,8 @@ export function CreateGiftForm() {
   const [usdcEquivalent, setUsdcEquivalent] = useState("…");
   const [showUnregisteredWarning, setShowUnregisteredWarning] = useState(false);
   const [recipientRegistered, setRecipientRegistered] = useState<boolean | null>(null);
+  const [voiceNoteBlob, setVoiceNoteBlob] = useState<Blob | null>(null);
+  const [voiceNoteUrl, setVoiceNoteUrl] = useState<string | null>(null);
 
   const { csrfFetch } = useCsrf();
 
@@ -42,6 +48,29 @@ export function CreateGiftForm() {
 
   const recipientPhone = watch("recipientPhone");
   const watchedUnlockAt = watch("unlockAt");
+  const messageValue = watch("message") ?? "";
+  const messageLength = messageValue.length;
+
+  const handleVoiceNote = useCallback((blob: Blob | null) => {
+    setVoiceNoteBlob(blob);
+    if (!blob) setVoiceNoteUrl(null);
+  }, []);
+
+  const autoResizeTextarea = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
+    const el = e.currentTarget;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, []);
+
+  const uploadVoiceNote = async (): Promise<string | null> => {
+    if (!voiceNoteBlob) return null;
+    const form = new FormData();
+    form.append("file", voiceNoteBlob, "voice-note.webm");
+    const res = await csrfFetch("/api/v1/uploads", { method: "POST", body: form });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.data?.url ?? null;
+  };
 
   // Step 1 → Step 2: fetch USDC estimate then show preview
   const onFormSubmit = async (data: CreateGiftInput) => {
@@ -61,6 +90,12 @@ export function CreateGiftForm() {
         setRecipientRegistered(true);
       }
 
+      // Upload voice note if present
+      if (voiceNoteBlob) {
+        const url = await uploadVoiceNote();
+        setVoiceNoteUrl(url);
+      }
+
       // GET — no CSRF needed
       const res = await fetch(`/api/v1/exchange-rate?ngn=${data.amountNgn}`);
       if (res.ok) {
@@ -75,8 +110,11 @@ export function CreateGiftForm() {
 
   const onProceedUnregistered = async () => {
     setShowUnregisteredWarning(false);
-    // Now proceed to fetch exchange rate and preview
     try {
+      if (voiceNoteBlob) {
+        const url = await uploadVoiceNote();
+        setVoiceNoteUrl(url);
+      }
       const data = getValues();
       // GET — no CSRF needed
       const res = await fetch(`/api/v1/exchange-rate?ngn=${data.amountNgn}`);
@@ -105,6 +143,7 @@ export function CreateGiftForm() {
         body: JSON.stringify({
           ...data,
           recipientIsRegistered: recipientRegistered ?? true,
+          ...(voiceNoteUrl ? { voiceNoteUrl } : {}),
         }),
       });
 
@@ -181,14 +220,28 @@ export function CreateGiftForm() {
           {...register("unlockAt")}
         />
 
-        <Textarea
-          label="Personal Message (optional)"
-          id="message"
-          rows={3}
-          placeholder="Write something heartfelt…"
-          error={errors.message?.message}
-          {...register("message")}
-        />
+        <div>
+          <Textarea
+            label="Personal Message (optional)"
+            id="message"
+            rows={3}
+            placeholder="Write something heartfelt…"
+            error={errors.message?.message}
+            style={{ overflow: "hidden", resize: "none" }}
+            onInput={autoResizeTextarea}
+            {...register("message")}
+          />
+          <span
+            className={styles.charCounter}
+            data-warning={messageLength >= MESSAGE_MAX - MESSAGE_WARN_THRESHOLD}
+            aria-live="polite"
+            aria-label={`${messageLength} of ${MESSAGE_MAX} characters used`}
+          >
+            {messageLength}/{MESSAGE_MAX}
+          </span>
+        </div>
+
+        <VoiceNoteRecorder onVoiceNote={handleVoiceNote} disabled={loading} />
 
         <Button type="submit" fullWidth>
           Preview Gift →
