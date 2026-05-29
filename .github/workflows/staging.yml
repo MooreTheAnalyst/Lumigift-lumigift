@@ -2,7 +2,7 @@ name: Deploy to Staging
 
 on:
   push:
-    branches: [develop]
+    branches: [main, develop]
 
 concurrency:
   group: staging-deploy
@@ -30,22 +30,35 @@ jobs:
         env:
           NEXT_PUBLIC_APP_URL: ${{ vars.STAGING_APP_URL }}
           NEXT_PUBLIC_APP_NAME: Lumigift (Staging)
+          NEXT_PUBLIC_APP_ENV: staging
+          APP_ENV: staging
           NEXTAUTH_URL: ${{ vars.STAGING_APP_URL }}
           NEXTAUTH_SECRET: ${{ secrets.STAGING_NEXTAUTH_SECRET }}
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          # Stellar — always testnet in staging
           STELLAR_NETWORK: testnet
           STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
           STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
           STELLAR_ESCROW_CONTRACT_ID: ${{ secrets.STAGING_STELLAR_ESCROW_CONTRACT_ID }}
           STELLAR_SERVER_SECRET_KEY: ${{ secrets.STAGING_STELLAR_SERVER_SECRET_KEY }}
-          USDC_ISSUER: CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
+          STELLAR_RPC_URL: https://soroban-testnet.stellar.org
+          USDC_ISSUER: GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
           USDC_ASSET_CODE: USDC
+          # Payments — Paystack test mode keys
           PAYSTACK_SECRET_KEY: ${{ secrets.STAGING_PAYSTACK_SECRET_KEY }}
+          NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY: ${{ vars.STAGING_PAYSTACK_PUBLIC_KEY }}
           STRIPE_SECRET_KEY: ${{ secrets.STAGING_STRIPE_SECRET_KEY }}
+          NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${{ vars.STAGING_STRIPE_PUBLISHABLE_KEY }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STAGING_STRIPE_WEBHOOK_SECRET }}
           TERMII_API_KEY: ${{ secrets.STAGING_TERMII_API_KEY }}
           REDIS_URL: ${{ secrets.STAGING_REDIS_URL }}
           CRON_SECRET: ${{ secrets.STAGING_CRON_SECRET }}
+          # Sentry
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
 
       - name: Deploy to Vercel (staging)
         id: deploy

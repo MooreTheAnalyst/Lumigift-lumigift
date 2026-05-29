@@ -1,0 +1,132 @@
+# Staging environment — mirrors production Docker setup.
+# Uses separate DB/Redis volumes and testnet/test-mode credentials.
+# Usage: docker-compose -f docker-compose.staging.yml up
+
+services:
+  # ─── PostgreSQL (staging — separate DB instance) ────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lumigift_staging
+      POSTGRES_PASSWORD: ${STAGING_DB_PASSWORD:-staging_password}
+      POSTGRES_DB: lumigift_staging
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-staging-data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lumigift_staging -d lumigift_staging"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lumigift-staging-network
+
+  # ─── Redis (staging — separate instance) ────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-staging-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lumigift-staging-network
+
+  # ─── Next.js Application (staging) ──────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      # App
+      - NEXT_PUBLIC_APP_URL=${STAGING_APP_URL:-http://localhost:3001}
+      - NEXT_PUBLIC_APP_NAME=Lumigift (Staging)
+      - NODE_ENV=production
+      - APP_ENV=staging
+      - NEXT_PUBLIC_APP_ENV=staging
+
+      # Auth
+      - NEXTAUTH_URL=${STAGING_APP_URL:-http://localhost:3001}
+      - NEXTAUTH_SECRET=${STAGING_NEXTAUTH_SECRET}
+
+      # Database — staging DB
+      - DATABASE_URL=postgresql://lumigift_staging:${STAGING_DB_PASSWORD:-staging_password}@postgres:5432/lumigift_staging
+
+      # Redis — staging Redis
+      - REDIS_URL=redis://redis:6379
+
+      # Stellar — always testnet in staging
+      - STELLAR_NETWORK=testnet
+      - STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
+      - STELLAR_NETWORK_PASSPHRASE=Test SDF Network ; September 2015
+      - STELLAR_ESCROW_CONTRACT_ID=${STAGING_STELLAR_ESCROW_CONTRACT_ID:-}
+      - STELLAR_SERVER_SECRET_KEY=${STAGING_STELLAR_SERVER_SECRET_KEY:-}
+      - STELLAR_RPC_URL=https://soroban-testnet.stellar.org
+      - STELLAR_SERVER_PUBLIC_KEY=${STAGING_STELLAR_SERVER_PUBLIC_KEY:-}
+
+      # USDC (testnet issuer)
+      - USDC_ISSUER=GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
+      - USDC_ASSET_CODE=USDC
+
+      # Payments — Paystack test mode keys
+      - PAYSTACK_SECRET_KEY=${STAGING_PAYSTACK_SECRET_KEY}
+      - NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY=${STAGING_NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY}
+      - STRIPE_SECRET_KEY=${STAGING_STRIPE_SECRET_KEY}
+      - NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${STAGING_NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STAGING_STRIPE_WEBHOOK_SECRET}
+
+      # SMS / OTP
+      - TERMII_API_KEY=${STAGING_TERMII_API_KEY:-}
+      - TERMII_SENDER_ID=Lumigift-Staging
+
+      # Cron
+      - CRON_SECRET=${STAGING_CRON_SECRET}
+
+      # Gift Limits
+      - GIFT_MIN_AMOUNT_NGN=500
+      - GIFT_MAX_AMOUNT_NGN=500000
+      - GIFT_DAILY_LIMIT_NGN=1000000
+
+      # Sentry
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - NEXT_PUBLIC_SENTRY_DSN=${NEXT_PUBLIC_SENTRY_DSN:-}
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - lumigift-staging-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+
+volumes:
+  postgres-staging-data:
+  redis-staging-data:
+
+networks:
+  lumigift-staging-network:
+    driver: bridge
