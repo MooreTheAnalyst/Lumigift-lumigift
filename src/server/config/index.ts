@@ -68,4 +68,7 @@ export const serverConfig = {
     rotationGraceHours: env.NEXTAUTH_ROTATION_GRACE_HOURS,
     csrfSecret: env.CSRF_SECRET,
   },
+  cors: {
+    allowedOrigins: env.CORS_ALLOWED_ORIGINS.split(",").map((origin) => origin.trim()),
+  },
 } as const;

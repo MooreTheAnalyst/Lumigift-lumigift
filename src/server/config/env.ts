@@ -51,6 +51,9 @@ const envSchema = z.object({
   // Cron
   CRON_SECRET: z.string().min(32),
 
+  // CORS
+  CORS_ALLOWED_ORIGINS: z.string().default("http://localhost:3000"),
+
   // Redis
   REDIS_URL: z.string().min(1),
   REDIS_USE_SENTINEL: z.preprocess((val) => val === "true" || val === "1", z.boolean()).default(false),

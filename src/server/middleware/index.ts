@@ -8,6 +8,9 @@ import { requestLogger, getCorrelationId } from "@/lib/logger";
 // Re-export CSRF middleware so callers can import from one place
 export { withCsrf } from "@/lib/csrf";
 
+// Re-export CORS middleware so callers can import from one place
+export { withCors } from "./cors";
+
 // Re-export validation helpers so callers can import from one place
 export { validateRequest, validationErrorResponse, formatZodErrors, searchParamsToObject } from "./validate";
 
