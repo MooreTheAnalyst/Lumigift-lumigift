@@ -1,4 +1,22 @@
 /**
+ * Scheduled-notification processor — finds funded/locked gifts whose
+ * `notifyAt` has passed and sends the recipient SMS notification.
+ *
+ * In production, trigger via Vercel Cron every minute alongside the unlock job.
+ *
+ * @returns The number of notifications dispatched in this run.
+ */
+export async function processScheduledNotifications(): Promise<number> {
+  const now = new Date();
+  // TODO: replace with DB query:
+  //   SELECT * FROM gifts
+  //   WHERE notify_at <= now AND notify_at IS NOT NULL
+  //     AND status IN ('funded','locked') AND notification_sent = false
+  console.warn("[scheduler] processScheduledNotifications called — wire up DB query here", now);
+  return 0;
+}
+
+/**
  * Unlock scheduler — checks for gifts whose `unlockAt` has passed and
  * transitions them from `"locked"` → `"unlocked"`, then notifies recipients.
  *

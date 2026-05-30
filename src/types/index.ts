@@ -11,6 +11,14 @@ export interface User {
 }
 
 // ─── Gift ─────────────────────────────────────────────────────────────────────
+export type OccasionCategory =
+  | "general"
+  | "birthday"
+  | "valentine"
+  | "anniversary"
+  | "graduation"
+  | "christmas";
+
 export type GiftStatus =
   | "draft"
   | "pending_payment"
@@ -35,6 +43,8 @@ export interface Gift {
   mediaUrl?: string;
   unlockAt: Date;
   status: GiftStatus;
+  occasion: OccasionCategory;
+  notifyAt?: Date;
   contractId?: string;       // Soroban escrow contract instance
   stellarTxHash?: string;    // funding transaction hash
   claimTxHash?: string;      // claim transaction hash

@@ -87,6 +87,8 @@ export async function createGift(
     voiceNoteUrl: input.voiceNoteUrl,
     unlockAt: new Date(input.unlockAt),
     status: "pending_payment",
+    occasion: input.occasion ?? "general",
+    notifyAt: input.notifyAt ? new Date(input.notifyAt) : undefined,
     createdAt: new Date(),
     updatedAt: new Date(),
   };

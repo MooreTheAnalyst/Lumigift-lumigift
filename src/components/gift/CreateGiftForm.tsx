@@ -221,6 +221,31 @@ export function CreateGiftForm() {
         />
 
         <div>
+          <label className={styles.label} htmlFor="occasion">Occasion (optional)</label>
+          <select
+            id="occasion"
+            className={styles.select}
+            {...register("occasion")}
+          >
+            <option value="general">🎁 General</option>
+            <option value="birthday">🎂 Birthday</option>
+            <option value="valentine">❤️ Valentine&apos;s Day</option>
+            <option value="anniversary">💍 Anniversary</option>
+            <option value="graduation">🎓 Graduation</option>
+            <option value="christmas">🎄 Christmas</option>
+          </select>
+        </div>
+
+        <DateTimePicker
+          label="Schedule Notification (optional)"
+          id="notifyAt"
+          error={errors.notifyAt?.message}
+          selectedDate={watch("notifyAt")}
+          recipientPhone={recipientPhone}
+          {...register("notifyAt")}
+        />
+
+        <div>
           <Textarea
             label="Personal Message (optional)"
             id="message"

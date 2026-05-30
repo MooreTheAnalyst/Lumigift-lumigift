@@ -86,7 +86,22 @@ export const createGiftSchema = z.object({
     message: "paymentProvider must be 'paystack' or 'stripe'",
   }),
   recipientIsRegistered: z.boolean().optional(),
-});
+  occasion: z
+    .enum(["general", "birthday", "valentine", "anniversary", "graduation", "christmas"])
+    .default("general"),
+  notifyAt: z
+    .string()
+    .datetime({ message: "notifyAt must be a valid ISO 8601 datetime" })
+    .optional()
+    .refine(
+      (val) => !val || new Date(val) > new Date(),
+      "Notification time must be in the future"
+    ),
+})
+.refine(
+  (data) => !data.notifyAt || new Date(data.notifyAt) <= new Date(data.unlockAt),
+  { message: "Notification time must be before or at the unlock time", path: ["notifyAt"] }
+);
 
 export type CreateGiftInput = z.infer<typeof createGiftSchema>;
 
